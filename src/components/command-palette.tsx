@@ -134,15 +134,34 @@ export function CommandPalette({
 
     const handle = setTimeout(async () => {
       const supabase = createClient();
+      // Escape LIKE metacharacters so a literal % or _ doesn't become a wildcard.
       const pattern = `%${term.replace(/[%_]/g, (m) => `\\${m}`)}%`;
 
-      const [tasks, meetings, people] = await Promise.all([
+      /*
+       * People are searched with two separate `.ilike()` calls rather than one
+       * `.or("full_name.ilike.X,email.ilike.X")`.
+       *
+       * `.or()` interpolates its argument raw into PostgREST's filter grammar,
+       * where `,` `(` `)` and `.` are structural. A search for
+       * `a,full_name.ilike.` would close our filter and append the attacker's
+       * own disjunct — `full_name.ilike.%` matches every row. RLS still bounds
+       * the result to this user, so it isn't a leak here, but the pattern is
+       * only ever one copy-paste away from a server-side query that runs with
+       * the service-role key and no RLS underneath it. `.ilike()` binds its
+       * argument as a single value, so commas inside it are inert.
+       */
+      const [tasks, meetings, peopleByName, peopleByEmail] = await Promise.all([
         supabase.from("tasks").select("id, title, status").ilike("title", pattern).limit(5),
         supabase.from("meetings").select("id, title, start_time").ilike("title", pattern).limit(5),
-        supabase.from("people").select("id, full_name, email").or(
-          `full_name.ilike.${pattern},email.ilike.${pattern}`,
-        ).limit(5),
+        supabase.from("people").select("id, full_name, email").ilike("full_name", pattern).limit(5),
+        supabase.from("people").select("id, full_name, email").ilike("email", pattern).limit(5),
       ]);
+
+      const people = {
+        data: [...(peopleByName.data ?? []), ...(peopleByEmail.data ?? [])]
+          .filter((p, i, all) => all.findIndex((o) => o.id === p.id) === i)
+          .slice(0, 5),
+      };
 
       const found: Item[] = [
         ...(tasks.data ?? []).map((t) => ({

@@ -1,13 +1,14 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { FurnaceMark } from "@/components/furnace-mark";
+import { authErrorMessage } from "@/lib/auth-errors";
 
 export const metadata: Metadata = { title: "Sign-in problem" };
 
-type Props = { searchParams: Promise<{ reason?: string }> };
+type Props = { searchParams: Promise<{ code?: string }> };
 
 export default async function AuthErrorPage({ searchParams }: Props) {
-  const { reason } = await searchParams;
+  const { code } = await searchParams;
 
   return (
     <div className="flex min-h-dvh items-center justify-center bg-bg px-5">
@@ -19,8 +20,9 @@ export default async function AuthErrorPage({ searchParams }: Props) {
         <h1 className="text-[20px] font-semibold tracking-[-0.02em] text-fg">
           The fire didn&apos;t catch
         </h1>
+        {/* Copy comes from a fixed table keyed by the code — never from the URL. */}
         <p className="mx-auto mt-2 max-w-[320px] text-[13px] leading-[1.55] text-fg-muted">
-          {reason || "Something went wrong while signing you in."}
+          {authErrorMessage(code)}
         </p>
 
         <div className="mt-6 flex justify-center">

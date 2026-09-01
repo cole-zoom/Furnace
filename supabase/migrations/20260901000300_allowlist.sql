@@ -41,8 +41,11 @@ $$;
 
 revoke all on function public.enforce_email_allowlist() from public, anon, authenticated;
 
-create trigger enforce_email_allowlist_before_insert
-  before insert on auth.users
+-- INSERT *and* UPDATE OF email. Covering only INSERT would let an existing
+-- account move its address off the list; the app would still refuse it on the
+-- next request, but the trigger should hold the invariant it claims to.
+create trigger enforce_email_allowlist_before_write
+  before insert or update of email on auth.users
   for each row execute function public.enforce_email_allowlist();
 
 -- Seed: the one human who is supposed to be in here.

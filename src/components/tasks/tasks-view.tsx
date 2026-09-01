@@ -9,6 +9,7 @@ import { EmptyState } from "@/components/ui/misc";
 import { Kbd, PRIORITY_META, PRIORITY_ORDER, STATUS_META, STATUS_ORDER } from "@/components/ui/badge";
 import { TaskBoard } from "@/components/tasks/task-board";
 import { TaskTable } from "@/components/tasks/task-table";
+import { Coal, FuelGauge } from "@/components/coal";
 import { createLocalStore } from "@/lib/local-store";
 import { cn } from "@/lib/utils";
 import type { Task, TaskPriority, TaskStatus } from "@/lib/database.types";
@@ -71,11 +72,22 @@ export function TasksView({ tasks }: { tasks: Task[] }) {
 
   const openCount = tasks.filter((t) => t.status !== "done").length;
 
+  // Fuel burned today. completed_at is maintained by a database trigger, so
+  // this stays honest even when a task is closed from the table checkbox.
+  const burnedToday = useMemo(() => {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    return tasks.filter(
+      (t) => t.completed_at && new Date(t.completed_at) >= startOfToday,
+    ).length;
+  }, [tasks]);
+
   return (
     <>
       <PageHeader
         title="Tasks"
         subtitle={`${openCount} open`}
+        meta={<FuelGauge burned={burnedToday} />}
         actions={
           <>
             <div className="relative">
@@ -177,7 +189,7 @@ export function TasksView({ tasks }: { tasks: Task[] }) {
       <div className="min-h-0 flex-1 overflow-hidden">
         {tasks.length === 0 ? (
           <EmptyState
-            icon={<Plus className="size-4" />}
+            icon={<Coal size={22} />}
             title="Nothing in the furnace yet"
             description="Add your first task, or paste a meeting transcript and let Gemini pull the action items out for you."
             action={

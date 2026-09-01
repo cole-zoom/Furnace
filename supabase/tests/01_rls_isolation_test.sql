@@ -177,6 +177,16 @@ begin
   exception when insufficient_privilege then
     raise notice 'PASS  non-allowlisted signup blocked at the database';
   end;
+
+  -- An INSERT-only trigger would let an existing account walk its address off
+  -- the list after the fact.
+  begin
+    update auth.users set email = 'rando@internet.example'
+      where id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    raise exception 'FAIL: an existing account moved its email off the allowlist';
+  exception when insufficient_privilege then
+    raise notice 'PASS  email cannot be updated off the allowlist';
+  end;
 end
 $$;
 

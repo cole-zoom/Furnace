@@ -58,8 +58,18 @@ Specific things that are easy to get wrong and are handled here:
   Every action calls `getUser()` before it touches data.
 - **`getUser()`, never `getSession()`**, server-side. `getSession()` only decodes
   what the cookie claims; `getUser()` revalidates the JWT with the auth server.
-- A migration asserts all of the above at deploy time and **fails the deploy** if
-  any public table ships without RLS, or any table is missing a policy.
+- **PostgREST filter strings are never built from user input.** Search uses
+  bound `.ilike()` parameters rather than an interpolated `.or(...)`, which
+  would let a crafted search term append its own disjuncts.
+- The checks above are packaged as a **re-runnable function**, not a one-shot
+  migration — so it still catches a table added six months from now:
+
+  ```sql
+  select public.assert_rls_sane();
+  ```
+
+  It runs on every deploy, on every local `test-rls.sh`, and you should run it
+  against production after any schema change.
 
 ### Proving it
 
@@ -69,10 +79,16 @@ brew install postgresql@17     # one-time; no Docker needed
 ```
 
 This spins up a throwaway Postgres, applies the real migrations on top of a small
-Supabase shim, then runs an adversarial suite: two users, and every "can B touch
-A's data" question answered. It covers cross-user reads, targeted-by-primary-key
-reads, `user_id` reassignment, cross-parent inserts, the `google_tokens`
-lockdown, anonymous access, and the signup allowlist.
+Supabase shim, re-runs `assert_rls_sane()`, then runs an adversarial suite: two
+users, and every "can B touch A's data" question answered. It covers cross-user
+reads, targeted-by-primary-key reads, `user_id` reassignment, cross-parent
+inserts, the `google_tokens` lockdown, anonymous access, and both halves of the
+signup allowlist (creating an account, and moving an existing one off the list).
+
+All 13 currently pass. An independent adversarial review — which ran its own
+extended SQL suite on top of this one — found **no path by which a second
+authenticated user or an anonymous visitor can read or mutate the owner's
+data**. Every issue it did raise was defense-in-depth and has been fixed.
 
 ---
 
@@ -105,6 +121,13 @@ Then in the dashboard:
 - **Authentication → URL Configuration**: set the site URL, and add
   `https://<your-domain>/auth/callback` plus
   `http://localhost:3000/auth/callback` to the redirect allowlist.
+
+  > ⚠️ **List those two URLs exactly — no wildcards.** The sign-in call passes a
+  > `redirectTo`, and Supabase will honour any value this list permits. A
+  > wildcard entry like `https://**` would let someone craft a sign-in link that
+  > sends your authorization code to their server. This is the single highest-
+  > impact setting in the whole setup and it lives in the dashboard, not in this
+  > repo, so nothing here can check it for you.
 - **Table Editor → `allowed_emails`**: confirm your address is in there. It's
   seeded by `20260901000300_allowlist.sql`; nobody can sign in without a row.
 

@@ -131,20 +131,29 @@ export function AppShell({
 export function PageHeader({
   title,
   subtitle,
+  meta,
   actions,
 }: {
   title: string;
   subtitle?: string;
+  /** Sits with the title, not the controls — for stats rather than buttons. */
+  meta?: React.ReactNode;
   actions?: React.ReactNode;
 }) {
   return (
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-[var(--stroke)] px-4">
-      <div className="flex min-w-0 items-baseline gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         <h1 className="truncate text-[15px] font-semibold tracking-[-0.02em] text-fg">
           {title}
         </h1>
         {subtitle && (
           <span className="shrink-0 text-[12px] text-fg-caption">{subtitle}</span>
+        )}
+        {meta && (
+          <>
+            <span aria-hidden className="h-3.5 w-px shrink-0 bg-[var(--stroke)]" />
+            {meta}
+          </>
         )}
       </div>
       {actions && <div className="ml-auto flex items-center gap-1.5">{actions}</div>}

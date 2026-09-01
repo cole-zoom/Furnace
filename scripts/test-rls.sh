@@ -43,6 +43,9 @@ for f in "$ROOT"/supabase/migrations/*.sql; do
   psql_ -f "$f" >/dev/null
 done
 
+echo "==> re-running the RLS assertion function"
+psql_ -c "select public.assert_rls_sane();" | grep -o 'furnace:.*'
+
 echo "==> running RLS suite"
 psql -v ON_ERROR_STOP=1 -h "$PGDATA" -p "$PGPORT" -U postgres -d furnace_test \
      -f "$ROOT/supabase/tests/01_rls_isolation_test.sql" 2>&1 |
