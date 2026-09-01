@@ -1,26 +1,324 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* Attio drives dark mode from a class so the toggle can override the OS. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ==========================================================================
+   Furnace design tokens
+
+   Lifted from Attio's shipped Tailwind `@theme` block, so these are their
+   authored values rather than eyeballed approximations. The two neutral ramps
+   are deliberately asymmetric — light runs white -> #cad0d9, dark runs
+   #101010 -> #a4adba. They are separate ladders, not one palette inverted.
+   ========================================================================== */
+@theme {
+  /* -- type ------------------------------------------------------------- */
+  --font-sans:    var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-display: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono:    var(--font-jetbrains), ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* -- neutral ramps ---------------------------------------------------- */
+  --color-white-100: #ffffff;  --color-black-0:   #000000;
+  --color-white-200: #fafafb;  --color-black-50:  #101010;
+  --color-white-300: #f3f4f6;  --color-black-100: #1c1d1f;
+  --color-white-400: #edeff3;  --color-black-200: #202124;
+  --color-white-500: #e4e7ec;  --color-black-300: #232529;
+  --color-white-600: #dee2e7;  --color-black-400: #2e3238;
+  --color-white-700: #d3d8df;  --color-black-500: #383e47;
+  --color-white-800: #cad0d9;  --color-black-600: #505967;
+  --color-white-900: #b5bdc9;  --color-black-700: #6f7988;
+                               --color-black-800: #8f99a8;
+                               --color-black-900: #a4adba;
+
+  /* -- accents ---------------------------------------------------------- */
+  --color-blue-100: #e8f0ff;  --color-blue-200: #c8dcff;  --color-blue-300: #94b9ff;
+  --color-blue-400: #709ff5;  --color-blue-450: #538bf3;  --color-blue-500: #266df0;
+  --color-blue-600: #245bc2;  --color-blue-800: #1a2233;
+  --color-green-500: #0fc27b; --color-green-600: #0db472;
+  --color-red-500:   #ff5b59; --color-red-600:   #f65351;
+  --color-yellow-500:#f5b900; --color-yellow-600:#dba601; --color-yellow-700:#ad7c00;
+
+  /* -- ember: Furnace's own accent, used only for heat/active moments ---- */
+  --color-ember-100: #fff1e2;
+  --color-ember-200: #ffd9b0;
+  --color-ember-300: #ffb066;
+  --color-ember-400: #ff8a2b;
+  --color-ember-500: #f2690a;
+  --color-ember-600: #c94f05;
+  --color-ember-700: #8f3703;
+
+  /* -- radii: 8px is the default; nested surfaces step down concentrically */
+  --radius-xs: 0.125rem; --radius-sm: 0.25rem; --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;   --radius-xl: 0.75rem; --radius-2xl: 1rem;
+  --radius-3xl: 1.25rem;
+
+  /* -- the attio-layer shadow system -----------------------------------
+     Seven layers at 1%–7% opacity, each doubling blur. Elevation is "how
+     many layers, always counting from 1". No single hard drop shadow. */
+  --shadow-layer-1: 0px 1px 3px 0px rgba(0,0,0,.01);
+  --shadow-layer-2: 0px 2px 4px -1px rgba(0,0,0,.02);
+  --shadow-layer-3: 0px 4px 8px -2px rgba(0,0,0,.03);
+  --shadow-layer-4: 0px 8px 16px -4px rgba(0,0,0,.04);
+  --shadow-layer-5: 0px 16px 32px -8px rgba(0,0,0,.05);
+  --shadow-layer-6: 0px 32px 64px -16px rgba(0,0,0,.06);
+
+  --shadow-e1: var(--shadow-layer-1), var(--shadow-layer-2);
+  --shadow-e2: var(--shadow-layer-1), var(--shadow-layer-2), var(--shadow-layer-3);
+  --shadow-e3: var(--shadow-layer-1), var(--shadow-layer-2), var(--shadow-layer-3),
+               var(--shadow-layer-4);
+  --shadow-e4: var(--shadow-layer-1), var(--shadow-layer-2), var(--shadow-layer-3),
+               var(--shadow-layer-4), var(--shadow-layer-5);
+  --shadow-e5: var(--shadow-layer-1), var(--shadow-layer-2), var(--shadow-layer-3),
+               var(--shadow-layer-4), var(--shadow-layer-5), var(--shadow-layer-6);
+  --shadow-ring: inset 0 0 0 1px rgba(0,0,0,.07), 0 1px 2px -1px rgba(0,0,0,.04);
+
+  /* -- motion: 50ms for hover, 150ms for state, 300ms+ for choreography -- */
+  --ease-out-attio:    cubic-bezier(0, 0, 0, 1);
+  --ease-in-out-attio: cubic-bezier(.2, 0, 0, 1);
+  --ease-out-cubic:    cubic-bezier(.33, 1, .68, 1);
+  --ease-spring:       cubic-bezier(.34, 1.56, .64, 1);
+
+  /* -- type scale: every step carries its own weight + tracking ---------- */
+  --text-xs:   0.75rem;  --text-xs--line-height:   1.125rem; --text-xs--font-weight: 500;
+  --text-sm:   0.875rem; --text-sm--line-height:   1.25rem;  --text-sm--font-weight: 500;
+  --text-sm--letter-spacing: -0.005em;
+  --text-base: 1rem;     --text-base--line-height: 1.375rem; --text-base--font-weight: 500;
+  --text-base--letter-spacing: -0.01em;
+  --text-lg:   1.125rem; --text-lg--line-height:   1.5rem;   --text-lg--font-weight: 500;
+  --text-lg--letter-spacing: -0.01em;
+  --text-xl:   1.25rem;  --text-xl--line-height:   1.625rem; --text-xl--font-weight: 500;
+  --text-xl--letter-spacing: -0.01em;
+  --text-2xl:  1.5rem;   --text-2xl--line-height:  1.875rem; --text-2xl--font-weight: 600;
+  --text-2xl--letter-spacing: -0.01em;
+  --text-3xl:  2rem;     --text-3xl--line-height:  2.25rem;  --text-3xl--font-weight: 600;
+  --text-3xl--letter-spacing: -0.015em;
 }
 
+/* ==========================================================================
+   Semantic tokens. Components reference only these, never the ramps above,
+   so light/dark stays a single swap.
+   ========================================================================== */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-bg:            var(--bg);
+  --color-bg-raised:     var(--bg-raised);
+  --color-bg-subtle:     var(--bg-subtle);
+  --color-bg-inset:      var(--bg-inset);
+  --color-bg-hover:      var(--bg-hover);
+  --color-stroke-weak:   var(--stroke-weak);
+  --color-stroke:        var(--stroke);
+  --color-stroke-strong: var(--stroke-strong);
+  --color-stroke-accent: var(--stroke-accent);
+  --color-fg:            var(--fg);
+  --color-fg-body:       var(--fg-body);
+  --color-fg-muted:      var(--fg-muted);
+  --color-fg-subtle:     var(--fg-subtle);
+  --color-fg-caption:    var(--fg-caption);
+  --color-fg-disabled:   var(--fg-disabled);
+  --color-link:          var(--link);
+  --color-link-strong:   var(--link-strong);
+  --color-success:       var(--success);
+  --color-danger:        var(--danger);
+  --color-warning:       var(--warning);
+  --color-ember:         var(--ember);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+:root {
+  --bg:            #ffffff;
+  --bg-raised:     #fafafb;
+  --bg-subtle:     #f3f4f6;
+  --bg-inset:      #edeff3;
+  --bg-hover:      #f3f4f6;
+  --stroke-weak:   #edeff3;
+  --stroke:        #e4e7ec;   /* the hairline that does ~all the structural work */
+  --stroke-strong: #cad0d9;
+  --stroke-accent: #709ff5;
+  --fg:            #1c1d1f;
+  --fg-body:       #232529;
+  --fg-muted:      #505967;
+  --fg-subtle:     #6f7988;
+  --fg-caption:    #a4adba;
+  --fg-disabled:   #d3d8df;
+  --link:          #266df0;
+  --link-strong:   #245bc2;
+  --success:       #0fc27b;
+  --danger:        #ff5b59;
+  --warning:       #ad7c00;
+  --ember:         #f2690a;
+  --focus-ring:    rgba(38, 109, 240, .30);
+  color-scheme: light;
+}
+
+.dark {
+  --bg:            #101010;
+  --bg-raised:     #1c1d1f;
+  --bg-subtle:     #232529;
+  --bg-inset:      #2e3238;
+  --bg-hover:      #232529;
+  --stroke-weak:   #232529;
+  --stroke:        #2e3238;
+  --stroke-strong: #8f99a8;
+  --stroke-accent: #709ff5;
+  --fg:            #ffffff;
+  --fg-body:       #edeff3;
+  --fg-muted:      #b5bdc9;
+  --fg-subtle:     #8f99a8;
+  --fg-caption:    #505967;
+  --fg-disabled:   #6f7988;
+  --link:          #709ff5;
+  --link-strong:   #94b9ff;
+  --success:       #0fc27b;
+  --danger:        #ff5b59;
+  --warning:       #f5b900;
+  --ember:         #ff8a2b;
+  --focus-ring:    rgba(112, 159, 245, .60);
+  color-scheme: dark;
+}
+
+/* ========================================================================== */
+@layer base {
+  * { border-color: var(--stroke); }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
+
+  body {
+    background: var(--bg);
+    color: var(--fg-body);
+    font-family: var(--font-sans);
+    /* 14px / weight 500 is the whole look. At 400 it stops reading as Attio. */
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    font-weight: 500;
+    letter-spacing: -0.005em;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    color: var(--fg);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 1px;
+    border-radius: var(--radius-sm);
+  }
+
+  ::selection { background: color-mix(in srgb, var(--link) 22%, transparent); }
+
+  /* Thin, self-effacing scrollbars — they should never be the loudest thing
+     in a dense table. */
+  * { scrollbar-width: thin; scrollbar-color: var(--stroke-strong) transparent; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--stroke); border-radius: 999px;
+    border: 3px solid transparent; background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--stroke-strong); background-clip: content-box; }
+
+  input, textarea, select, button { font: inherit; letter-spacing: inherit; }
+  input::placeholder, textarea::placeholder { color: var(--fg-caption); }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* --------------------------------------------------------------------------
+   Elevation utilities.
+
+   `box-shadow` is a single property, so a hairline ring and a drop shadow can
+   never be two separate classes — and because we merge classes with
+   tailwind-merge, the second one doesn't just override the first at the
+   cascade, it gets *dropped from the class list entirely*. That silently cost
+   the task cards their border once already.
+
+   So the ring and the elevation ship together in one declaration. `surface-*`
+   is bordered, `shadow-e*` is elevation only, and the two are never combined.
+   Declared with `@utility` (not `@layer utilities`) so `hover:` and friends
+   work on them.
+   -------------------------------------------------------------------------- */
+@utility shadow-e1 { box-shadow: var(--shadow-e1); }
+@utility shadow-e2 { box-shadow: var(--shadow-e2); }
+@utility shadow-e3 { box-shadow: var(--shadow-e3); }
+@utility shadow-e4 { box-shadow: var(--shadow-e4); }
+@utility shadow-e5 { box-shadow: var(--shadow-e5); }
+
+/* Hairline only — the workhorse for inputs, rows and flat panels. */
+@utility surface {
+  box-shadow: inset 0 0 0 1px var(--stroke);
+}
+@utility surface-strong {
+  box-shadow: inset 0 0 0 1px var(--stroke-strong);
+}
+@utility surface-accent {
+  box-shadow:
+    inset 0 0 0 1px var(--stroke-accent),
+    0 0 0 3px var(--focus-ring);
+}
+
+/* Hairline + elevation, for anything that lifts off the page. */
+@utility surface-e1 {
+  box-shadow: inset 0 0 0 1px var(--stroke), var(--shadow-e1);
+}
+@utility surface-e2 {
+  box-shadow: inset 0 0 0 1px var(--stroke), var(--shadow-e2);
+}
+@utility surface-e2-strong {
+  box-shadow: inset 0 0 0 1px var(--stroke-strong), var(--shadow-e2);
+}
+@utility surface-e3 {
+  box-shadow: inset 0 0 0 1px var(--stroke), var(--shadow-e3);
+}
+@utility surface-e4 {
+  box-shadow: inset 0 0 0 1px var(--stroke), var(--shadow-e4);
+}
+@utility surface-e5 {
+  box-shadow: inset 0 0 0 1px var(--stroke), var(--shadow-e5);
+}
+
+/* Minecraft sprites must stay crunchy at any scale. */
+@utility pixelated {
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: crisp-edges;
+}
+
+@utility no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
+}
+
+/* -- animation ------------------------------------------------------------ */
+@keyframes furnace-flicker {
+  0%, 100% { opacity: 1;    filter: brightness(1); }
+  25%      { opacity: .94;  filter: brightness(1.1); }
+  50%      { opacity: 1;    filter: brightness(.97); }
+  75%      { opacity: .97;  filter: brightness(1.06); }
+}
+@keyframes ember-rise {
+  0%   { transform: translateY(0) scale(1);      opacity: 0; }
+  15%  { opacity: .9; }
+  100% { transform: translateY(-26px) scale(.3); opacity: 0; }
+}
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
+}
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.animate-flicker   { animation: furnace-flicker 2.4s ease-in-out infinite; }
+.animate-fade-up   { animation: fade-up .18s var(--ease-out-attio) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
 }
