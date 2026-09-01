@@ -19,10 +19,6 @@ const jetbrains = JetBrains_Mono({
 export const metadata: Metadata = {
   title: { default: "Furnace", template: "%s · Furnace" },
   description: "A personal CRM for tasks, meetings and the people behind them.",
-  icons: {
-    icon: [{ url: "/furnace-idle.png", type: "image/png" }],
-    apple: [{ url: "/furnace-lit.webp" }],
-  },
   robots: { index: false, follow: false },
 };
 

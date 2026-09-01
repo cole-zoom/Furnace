@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import Link from "next/link";
 import { FurnaceMark } from "@/components/furnace-mark";
 import { Button } from "@/components/ui/button";
 
@@ -38,9 +39,13 @@ export default function ErrorBoundary({
           <Button variant="primary" size="sm" onClick={reset}>
             Try again
           </Button>
-          <Button size="sm" onClick={() => window.location.assign("/tasks")}>
+          <Link
+            href="/tasks"
+            className="inline-flex h-8 items-center rounded-md bg-bg px-2.5 text-sm font-medium text-fg-body
+                       surface-e1 transition-colors duration-[50ms] hover:bg-bg-subtle"
+          >
             Back to tasks
-          </Button>
+          </Link>
         </div>
       </div>
     </div>
