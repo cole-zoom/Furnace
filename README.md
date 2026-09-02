@@ -94,6 +94,10 @@ data**. Every issue it did raise was defense-in-depth and has been fixed.
 
 ## Setup
 
+> **Node 20.9+** (Next 16 dropped 18). The version isn't pinned in
+> `package.json` on purpose — an `engines` field silently overrides Vercel's own
+> Project Settings, so the dashboard stays authoritative there.
+
 ### 1. Install
 
 ```bash
