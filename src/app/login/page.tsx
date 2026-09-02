@@ -3,12 +3,16 @@ import type { Metadata } from "next";
 import { FurnaceMark } from "@/components/furnace-mark";
 import { GoogleSignIn } from "@/components/google-signin";
 import { ThemeToggle } from "@/components/theme";
+import { SetupRequired } from "@/components/setup-required";
+import { env } from "@/lib/env";
 
 export const metadata: Metadata = { title: "Sign in" };
 
 type Props = { searchParams: Promise<{ next?: string }> };
 
 export default async function LoginPage({ searchParams }: Props) {
+  if (!env.isConfigured) return <SetupRequired />;
+
   const { next } = await searchParams;
   const safeNext = next?.startsWith("/") && !next.startsWith("//") ? next : undefined;
 
