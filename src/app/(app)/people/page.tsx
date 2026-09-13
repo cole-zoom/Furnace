@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import { requireUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { PeopleView } from "@/components/people-view";
-import { ListSkeleton } from "@/components/tasks/tasks-skeleton";
+import { ListSkeleton } from "@/components/ui/list-skeleton";
 
 export const metadata: Metadata = { title: "People" };
 

@@ -5,7 +5,8 @@ import {
   DndContext,
   DragOverlay,
   KeyboardSensor,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   closestCorners,
   useDroppable,
   useSensor,
@@ -36,9 +37,18 @@ type Columns = Record<TaskStatus, Task[]>;
 function group(tasks: Task[]): Columns {
   const next: Columns = { todo: [], in_progress: [], blocked: [], done: [] };
   for (const task of tasks) {
-    // A status outside the enum would otherwise index to undefined and throw
-    // on .push, taking the whole board down with it.
-    (next[task.status] ?? next.todo).push(task);
+    /*
+     * hasOwn rather than `next[status] ?? next.todo`: a status colliding with
+     * an Object.prototype member ("toString", "constructor") resolves to an
+     * inherited function, so `??` never fires and `.push` throws — the exact
+     * crash this guard exists to prevent.
+     */
+    if (Object.hasOwn(next, task.status)) {
+      next[task.status].push(task);
+    } else {
+      console.warn(`[furnace] task ${task.id} has unknown status`, task.status);
+      next.todo.push(task);
+    }
   }
   for (const status of STATUS_ORDER) {
     next[status].sort((a, b) => a.sort_order - b.sort_order);
@@ -60,9 +70,20 @@ function SortableCard({ task, onEdit }: { task: Task; onEdit: (t: Task) => void 
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Translate.toString(transform), transition }}
-      className={cn("touch-none", isDragging && "z-10")}
+      className={cn(isDragging && "z-10")}
       {...attributes}
       {...listeners}
+      /*
+       * `attributes` makes this a focusable role="button", but the click that
+       * opens the editor lives on the inner div and a div doesn't synthesize
+       * click from Enter. Without this a keyboard user can only ever drag.
+       */
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          onEdit(task);
+        }
+      }}
     >
       <TaskCard task={task} dragging={isDragging} onClick={() => onEdit(task)} />
     </div>
@@ -149,10 +170,23 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
   }
 
   const sensors = useSensors(
-    // A few pixels of slop so a click on a card still opens the editor rather
-    // than starting a drag.
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+    // Mouse: a few pixels of slop, so a click still opens the editor.
+    useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
+    /*
+     * Touch: long-press, NOT distance. The board is four 260px columns in a
+     * horizontal scroller, so on a phone it has to be panned — and cards cover
+     * almost all of that surface. With a distance constraint (plus the
+     * touch-action:none it requires) a swipe starting on a card would lift the
+     * card instead of scrolling, stranding the Blocked and Done columns
+     * offscreen. A delay lets a swipe scroll normally and reserves dragging for
+     * a deliberate press-and-hold.
+     */
+    useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 8 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+      // Space drives the drag so Enter stays free to open the editor.
+      keyboardCodes: { start: ["Space"], cancel: ["Escape"], end: ["Space"] },
+    }),
   );
 
   const activeTask = useMemo(
