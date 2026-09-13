@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -36,7 +36,7 @@ export function MeetingsView({
 }: {
   meetings: Meeting[];
   openActionCounts: Record<string, number>;
-  /** Epoch ms, resolved on the server so it can't drift or be impure here. */
+  /** Epoch ms, resolved on the server: correct on first paint, no hydration gap. */
   now: number;
 }) {
   const { pasteTranscript } = useShell();
@@ -68,8 +68,50 @@ export function MeetingsView({
       }
     });
 
-  const isUpcoming = (m: Meeting) =>
-    Boolean(m.start_time) && new Date(m.start_time as string).getTime() > now;
+  /*
+   * The server value seeds it; a timer keeps it honest. Without the tick, a tab
+   * left open overnight still holds yesterday's timestamp, so a meeting that
+   * started twelve hours ago sits under Upcoming — hidden from the default tab,
+   * which is the burial this whole feature exists to prevent. Cheap: one
+   * setState a minute, and only when the tab is actually visible.
+   */
+  const [clock, setClock] = useState(now);
+  useEffect(() => {
+    const tick = () => setClock(Date.now());
+    const id = setInterval(tick, 60_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+
+  const isUpcoming = (m: Meeting) => {
+    if (!m.start_time) return false;
+    const start = new Date(m.start_time);
+
+    /*
+     * Google stores an all-day event as a bare date, which Postgres reads as
+     * UTC midnight. Anywhere west of UTC that lands the previous evening, so a
+     * straight comparison files today's all-day event under Past before the day
+     * it belongs to has even started. Compare calendar days for those.
+     */
+    const isAllDay =
+      start.getUTCHours() === 0 &&
+      start.getUTCMinutes() === 0 &&
+      start.getUTCSeconds() === 0;
+
+    if (isAllDay) {
+      const today = new Date(clock);
+      const localDay = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+      return start.toISOString().slice(0, 10) > localDay;
+    }
+
+    return start.getTime() > clock;
+  };
 
   // Counted over everything, not over `visible` — these describe the calendar,
   // not the current filter, and mixing the two produced a header that claimed
@@ -77,24 +119,50 @@ export function MeetingsView({
   const upcomingCount = meetings.filter(isUpcoming).length;
   const pastCount = meetings.length - upcomingCount;
 
-  const visible = meetings.filter((m) => {
-    if (when === "past" && isUpcoming(m)) return false;
-    if (when === "upcoming" && !isUpcoming(m)) return false;
+  // Split the two axes: knowing how many survive the time tab alone is what
+  // lets the empty state name the right culprit.
+  const inTab = meetings.filter((m) => {
+    if (when === "past") return !isUpcoming(m);
+    if (when === "upcoming") return isUpcoming(m);
+    return true;
+  });
+
+  const matching = inTab.filter((m) => {
     if (filter === "summarised") return m.ai_status === "complete";
     if (filter === "needs-transcript") return !m.transcript;
     return true;
   });
 
+  /*
+   * The page orders newest-first, which is right for Past — but left Upcoming
+   * showing the meeting three weeks out at the top and tomorrow's at the
+   * bottom. Soonest-first is the only sensible reading of "upcoming".
+   */
+  const visible =
+    when === "upcoming"
+      ? [...matching].sort(
+          (a, b) =>
+            new Date(a.start_time ?? 0).getTime() - new Date(b.start_time ?? 0).getTime(),
+        )
+      : matching;
+
   return (
     <>
       <PageHeader
         title="Meetings"
+        /*
+         * With a status filter on, the denominator is the current tab — not the
+         * whole calendar. "2 of 50" when 48 of that 50 can't appear under this
+         * tab is the same lying count an earlier round set out to fix.
+         */
         subtitle={
           filter !== "all"
-            ? `${visible.length} of ${meetings.length}`
+            ? `${visible.length} of ${inTab.length}`
             : when === "past" && upcomingCount > 0
               ? `${pastCount} past · ${upcomingCount} upcoming`
-              : `${visible.length} of ${meetings.length}`
+              : when === "upcoming"
+                ? `${upcomingCount} upcoming`
+                : `${meetings.length} total`
         }
         actions={
           <>
@@ -178,12 +246,13 @@ export function MeetingsView({
           <EmptyState
             icon={<CalendarDays className="size-4" />}
             /*
-             * `visible` is filtered on two axes, so the explanation has to name
-             * the right one. Blaming the time tab while a status filter is what
-             * actually hid everything tells the reader something false.
+             * Two axes can empty this list, so name the one that did. If the tab
+             * still holds meetings, the status filter hid them; if the tab is
+             * empty, the filter is irrelevant and the way out is the other tab —
+             * which means the escape hatch must NOT be gated on the filter.
              */
             title={
-              filter !== "all"
+              inTab.length > 0
                 ? "Nothing matches that filter"
                 : when === "past"
                   ? "No past meetings yet"
@@ -192,12 +261,12 @@ export function MeetingsView({
                     : "No meetings yet"
             }
             description={
-              filter === "all" && when === "past" && upcomingCount > 0
+              inTab.length === 0 && when === "past" && upcomingCount > 0
                 ? `You have ${upcomingCount} upcoming — they'll show up here once they've happened.`
                 : undefined
             }
             action={
-              filter === "all" && when === "past" && upcomingCount > 0 ? (
+              inTab.length === 0 && when === "past" && upcomingCount > 0 ? (
                 <Button size="sm" onClick={() => setWhen("upcoming")}>
                   See upcoming
                 </Button>

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { ArrowUpRight, CalendarDays, Check, Lightbulb, Sparkles } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Skeleton } from "@/components/ui/misc";
@@ -41,14 +40,7 @@ type State =
  * Read with the browser client, so RLS scopes it — a meeting id that isn't
  * yours returns nothing rather than someone else's notes.
  */
-export function TaskMeetingPanel({
-  meetingId,
-  onNavigate,
-}: {
-  meetingId: string;
-  /** Called before following the link out, so the dialog can get out of the way. */
-  onNavigate?: () => void;
-}) {
+export function TaskMeetingPanel({ meetingId }: { meetingId: string }) {
   const [state, setState] = useState<State>({ kind: "loading" });
 
   useEffect(() => {
@@ -107,7 +99,7 @@ export function TaskMeetingPanel({
 
   return (
     <Framed>
-      <MeetingContextCard meeting={state.meeting} onNavigate={onNavigate} />
+      <MeetingContextCard meeting={state.meeting} />
     </Framed>
   );
 }
@@ -132,13 +124,7 @@ function Framed({ children }: { children: React.ReactNode }) {
 }
 
 /** Presentation only, so it can be rendered without a session behind it. */
-export function MeetingContextCard({
-  meeting,
-  onNavigate,
-}: {
-  meeting: MeetingContext;
-  onNavigate?: () => void;
-}) {
+export function MeetingContextCard({ meeting }: { meeting: MeetingContext }) {
   const hasInsights =
     Boolean(meeting.summary) || meeting.key_points.length > 0 || meeting.decisions.length > 0;
 
@@ -152,29 +138,46 @@ export function MeetingContextCard({
             <p className="text-[11px] text-fg-caption">{formatDateTime(meeting.start_time)}</p>
           )}
         </div>
-        <Link
+        {/*
+          * Opens in a new tab, deliberately.
+          *
+          * Navigating in place meant closing the dialog — AppShell lives in the
+          * (app) layout and survives client-side navigation, so leaving it open
+          * stranded the overlay, scroll lock and focus trap on top of the
+          * meeting page. But closing it threw away whatever had been typed into
+          * the task, with no prompt. And because next/link runs onClick before
+          * its own modified-event check, a ⌘-click discarded the edits while
+          * opening a background tab — losing work in exchange for nothing.
+          *
+          * A new tab sidesteps all three: the editor stays exactly as it was.
+          */}
+        <a
           href={`/meetings/${meeting.id}`}
-          /*
-           * The dialog lives in the (app) layout, which survives client-side
-           * navigation — so without this the overlay, scroll lock and focus
-           * trap all follow you to the meeting page and sit on top of it.
-           */
-          onClick={onNavigate}
+          target="_blank"
+          rel="noopener noreferrer"
           className="inline-flex shrink-0 items-center gap-0.5 text-[12px] text-link
                      transition-colors duration-[50ms] hover:text-link-strong"
         >
           Open
           <ArrowUpRight className="size-3" />
-        </Link>
+        </a>
       </header>
 
       {!hasInsights ? (
         <p className="text-[12px] leading-[1.5] text-fg-caption">
+          {/*
+            * Phrased off ai_status, which is the thing actually known here.
+            * "complete" with nothing to show is reachable — a thin or garbled
+            * transcript can summarise to an empty string — and telling that
+            * user to paste a transcript they already pasted is just wrong.
+            */}
           {meeting.ai_status === "failed"
             ? "The transcript couldn't be summarised. Open the meeting to retry."
             : meeting.ai_status === "processing"
               ? "Summarising the transcript…"
-              : "No transcript yet — paste one on the meeting to get a summary."}
+              : meeting.ai_status === "complete"
+                ? "Summarised, but nothing substantial came back."
+                : "No transcript yet — paste one on the meeting to get a summary."}
         </p>
       ) : (
         <div className="space-y-2.5">

@@ -121,7 +121,7 @@ export function TaskDialog({ open, onClose, task, defaultStatus }: TaskDialogPro
       <div className="space-y-3.5">
         {/* Why this task exists, without leaving the board to find out. */}
         {task?.meeting_id && (
-          <TaskMeetingPanel meetingId={task.meeting_id} onNavigate={onClose} />
+          <TaskMeetingPanel meetingId={task.meeting_id} />
         )}
 
         <Field label="Title">
