@@ -1,0 +1,5 @@
+# Machine-local CLI state: rewritten on every `supabase link` / `db push`, and
+# it carries the project ref and pooler host — neither belongs in a public repo.
+.branches
+.temp
+.env

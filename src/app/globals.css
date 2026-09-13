@@ -286,6 +286,13 @@
   image-rendering: crisp-edges;
 }
 
+/* The whole task card is a long-press drag surface on touch, so the browser's
+   native text-selection callout has to be suppressed or it pops up over the
+   drag. Tailwind has select-none; the iOS callout needs this. */
+@utility no-callout {
+  -webkit-touch-callout: none;
+}
+
 @utility no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
