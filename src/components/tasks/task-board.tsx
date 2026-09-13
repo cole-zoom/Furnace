@@ -271,7 +271,7 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
    * the app, pulling down the notification shade, or a second finger landing
    * mid-drag. Escape during a keyboard drag does the same.
    */
-  const beforeDrag = useRef<Columns | null>(null);
+  const beforeDrag = useRef<{ columns: Columns; tasks: Task[] } | null>(null);
 
   // Server data wins whenever it changes — after a router.refresh(), an edit,
   // or a calendar sync. This is React's "adjust state during render" pattern
@@ -336,15 +336,24 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
     origin.current = from
       ? { status: from, index: columns[from].findIndex((t) => t.id === id) }
       : null;
-    beforeDrag.current = columns;
+    beforeDrag.current = { columns, tasks };
   };
 
   /** Put the board back exactly as it was before the drag started. */
   const abandonDrag = () => {
-    if (beforeDrag.current) setColumns(beforeDrag.current);
+    const snapshot = beforeDrag.current;
     beforeDrag.current = null;
     origin.current = null;
     setActiveId(null);
+
+    if (!snapshot) return;
+    /*
+     * Only restore a snapshot taken from the data we're still rendering. A
+     * refresh landing mid-drag replaces `columns` with newer server rows, and
+     * putting the pre-drag board back at that point would silently discard the
+     * update; falling through to server truth is the honest outcome.
+     */
+    setColumns(snapshot.tasks === tasks ? snapshot.columns : group(tasks));
   };
 
   /** Move the card between columns live, so the board reflows under the cursor. */
@@ -384,16 +393,28 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
     }
 
     const status = columnOf(String(over.id)) ?? columnOf(String(active.id));
-    if (!status) return;
+    if (!status) {
+      abandonDrag();
+      return;
+    }
 
     const list = columns[status];
     const oldIndex = list.findIndex((t) => t.id === active.id);
-    const overIndex = list.findIndex((t) => t.id === over.id);
-    const newIndex = overIndex >= 0 ? overIndex : list.length - 1;
     if (oldIndex < 0) {
       abandonDrag();
       return;
     }
+
+    /*
+     * `over` is a column, not a card, whenever the cursor isn't over some OTHER
+     * card — including when it's still sitting on the dragged card itself.
+     * Treating that as "append to the bottom" meant a 6px nudge, or a 220ms
+     * press on touch, silently relocated the card to the end of its column and
+     * saved it. onDragOver has already placed the card wherever it belongs, so
+     * a column-level drop means "stay put".
+     */
+    const overIndex = list.findIndex((t) => t.id === over.id);
+    const newIndex = overIndex >= 0 ? overIndex : oldIndex;
 
     const reordered = oldIndex === newIndex ? list : arrayMove(list, oldIndex, newIndex);
     const finalIndex = reordered.findIndex((t) => t.id === active.id);
