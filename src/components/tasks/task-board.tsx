@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -82,6 +82,18 @@ const warnedUnknownStatus = new Set<string>();
  * fallback for keyboard dragging, where there is no pointer.
  */
 const collisionDetection: CollisionDetection = (args) => {
+  /*
+   * The active card is excluded, and must stay excluded. Leaving it in lets
+   * `over` alternate between the card (whose rect dnd-kit re-measures as the
+   * board reflows) and the column under the cursor, and since onDragOver writes
+   * state on every flip, that oscillates into "Maximum update depth exceeded"
+   * and takes the board down mid-drag. Measured, not theorised.
+   *
+   * The cost is that "the pointer is still on my own slot" and "the pointer is
+   * in the column's empty tail" both read as a column hit, so onDragEnd treats
+   * a same-column tail drop as "stay put" — to send a card to the bottom of its
+   * own column, drop it on the last card. Wrong-but-safe beats a crash.
+   */
   const candidates = args.droppableContainers.filter(
     (container) => container.id !== args.active.id,
   );
@@ -93,6 +105,7 @@ const collisionDetection: CollisionDetection = (args) => {
     return card ? [card] : byPointer;
   }
 
+  // Keyboard drags have no pointer; fall back to rect overlap.
   return rectIntersection({ ...args, droppableContainers: candidates });
 };
 
@@ -273,6 +286,31 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
    */
   const beforeDrag = useRef<{ columns: Columns; tasks: Task[] } | null>(null);
 
+  /*
+   * True from the moment a drag reparents a card until the board has painted.
+   *
+   * Reparenting reflows both columns, which changes what sits under the cursor,
+   * which flips the collision back to the original column, which reparents
+   * again — the card ping-pongs between two columns until React bails out with
+   * "Maximum update depth exceeded" and the whole board hits the error
+   * boundary. Measured, not hypothetical:
+   *
+   *   over=column:in_progress  from=todo         to=in_progress
+   *   over=Card Y              from=in_progress  to=todo
+   *   ...repeating
+   *
+   * Allowing at most one reparent per frame breaks the cycle while leaving
+   * genuine column changes — which are always frames apart — untouched.
+   */
+  const settling = useRef(false);
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      settling.current = false;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [columns]);
+
   // Server data wins whenever it changes — after a router.refresh(), an edit,
   // or a calendar sync. This is React's "adjust state during render" pattern
   // rather than a syncing effect: it re-renders immediately with the new value
@@ -365,6 +403,10 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
     const to = columnOf(String(over.id));
     if (!from || !to || from === to) return;
 
+    // One reparent per frame; see `settling`.
+    if (settling.current) return;
+    settling.current = true;
+
     setColumns((prev) => {
       const moving = prev[from].find((t) => t.id === active.id);
       if (!moving) return prev;
@@ -413,6 +455,12 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
      * saved it. onDragOver has already placed the card wherever it belongs, so
      * a column-level drop means "stay put".
      */
+    /*
+     * A column-level `over` means the cursor isn't on another card — either
+     * still on the dragged card's own slot, or in the column's empty tail. Those
+     * are indistinguishable here (see collisionDetection), and onDragOver has
+     * already placed the card, so both mean "keep the index you have".
+     */
     const overIndex = list.findIndex((t) => t.id === over.id);
     const newIndex = overIndex >= 0 ? overIndex : oldIndex;
 
@@ -431,11 +479,19 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
      * holding a card to read it reaches this point.
      */
     const startedAt = origin.current;
-    origin.current = null;
-    beforeDrag.current = null;
     if (startedAt && startedAt.status === status && startedAt.index === finalIndex) {
+      /*
+       * Nothing to persist — but onDragOver has been rewriting `columns`
+       * throughout the drag, so local state is very likely NOT the pre-drag
+       * arrangement even though the card ends up back at its original index.
+       * Returning bare would leave the board rendering the card in a slot the
+       * server never agreed to. abandonDrag puts it back exactly.
+       */
+      abandonDrag();
       return;
     }
+    origin.current = null;
+    beforeDrag.current = null;
 
     const moved = { ...reordered[finalIndex], status, sort_order: sortOrder };
     const optimistic: Columns = {
