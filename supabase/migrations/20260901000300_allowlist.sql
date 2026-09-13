@@ -48,7 +48,13 @@ create trigger enforce_email_allowlist_before_write
   before insert or update of email on auth.users
   for each row execute function public.enforce_email_allowlist();
 
--- Seed: the one human who is supposed to be in here.
+-- Seed: the humans who are supposed to be in here.
+--
+-- Each address that signs in becomes a SEPARATE account with its own isolated
+-- data — RLS keys on auth.uid(), not on the address. Two entries here means two
+-- private Furnaces, not two doors into one.
 insert into public.allowed_emails (email, note)
-values ('cole.dumanski@lancedb.com', 'owner')
+values
+  ('cole.dumanski@lancedb.com', 'owner — work'),
+  ('coledumanski@gmail.com',    'owner — personal')
 on conflict (email) do nothing;
