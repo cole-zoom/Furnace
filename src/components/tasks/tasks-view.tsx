@@ -10,26 +10,20 @@ import { Kbd, PRIORITY_META, PRIORITY_ORDER, STATUS_META, STATUS_ORDER } from "@
 import { TaskBoard } from "@/components/tasks/task-board";
 import { TaskTable } from "@/components/tasks/task-table";
 import { Coal, FuelGauge } from "@/components/coal";
-import { createLocalStore } from "@/lib/local-store";
+import { taskViewStore, type TaskViewMode } from "@/lib/view-store";
 import { cn } from "@/lib/utils";
 import type { Task, TaskPriority, TaskStatus } from "@/lib/database.types";
 
-type ViewMode = "board" | "table";
-
-const viewStore = createLocalStore<ViewMode>(
-  "furnace-task-view",
-  "board",
-  (v) => v === "board" || v === "table",
-);
+type ViewMode = TaskViewMode;
 
 export function TasksView({ tasks }: { tasks: Task[] }) {
   const { newTask, editTask } = useShell();
   const searchParams = useSearchParams();
 
   const view = useSyncExternalStore(
-    viewStore.subscribe,
-    viewStore.get,
-    viewStore.getServer,
+    taskViewStore.subscribe,
+    taskViewStore.get,
+    taskViewStore.getServer,
   );
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<TaskStatus | "all">("all");
@@ -37,7 +31,7 @@ export function TasksView({ tasks }: { tasks: Task[] }) {
   const [hideDone, setHideDone] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
-  const chooseView = (next: ViewMode) => viewStore.set(next);
+  const chooseView = (next: ViewMode) => taskViewStore.set(next);
 
   // Deep link from the command palette: /tasks?task=<id> opens that task.
   const deepLinkId = searchParams.get("task");

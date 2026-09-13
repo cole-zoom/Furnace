@@ -82,12 +82,13 @@ function SortableCard({ task, onEdit }: { task: Task; onEdit: (t: Task) => void 
      * anywhere. How a drag starts differs per input, which is the point:
      *   mouse    — 4px of movement, so a plain click still opens the editor
      *   touch    — 220ms press-and-hold, so a swipe pans the board instead
-     *   keyboard — Space (Enter is reserved for opening the editor)
+     *   keyboard — Space lifts; Space/Enter/Tab drop. Enter opens the editor
+     *                instead when nothing is lifted.
      */
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Translate.toString(transform), transition }}
-      className={cn(isDragging && "z-10")}
+      className={cn("cursor-grab active:cursor-grabbing", isDragging && "z-10")}
       {...attributes}
       {...listeners}
       /*
@@ -102,12 +103,17 @@ function SortableCard({ task, onEdit }: { task: Task; onEdit: (t: Task) => void 
        * every key silently kills keyboard dragging outright.
        */
       onKeyDown={(event) => {
-        if (event.key === "Enter") {
+        /*
+         * Enter opens the editor — but only when this card isn't mid-lift,
+         * where Enter means "drop it here". Opening a modal over a live drag
+         * leaves the keyboard sensor attached, so arrow keys would move the
+         * floating card instead of the text caret.
+         */
+        if (event.key === "Enter" && !isDragging) {
           event.preventDefault();
           onEdit(task);
           return;
         }
-        // Everything else, Space included, belongs to dnd-kit.
         listeners?.onKeyDown?.(event);
       }}
     >
@@ -211,8 +217,17 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
     useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 8 } }),
     useSensor(KeyboardSensor, {
       coordinateGetter: sortableKeyboardCoordinates,
-      // Space drives the drag so Enter stays free to open the editor.
-      keyboardCodes: { start: ["Space"], cancel: ["Escape"], end: ["Space"] },
+      /*
+       * Only Space *starts* a drag, so Enter stays free to open the editor.
+       * All three still END one: Enter because it's the natural "drop", and Tab
+       * because otherwise moving focus leaves the card lifted and still
+       * tracking arrow keys from the document listener.
+       */
+      keyboardCodes: {
+        start: ["Space"],
+        cancel: ["Escape"],
+        end: ["Space", "Enter", "Tab"],
+      },
     }),
   );
 
@@ -284,6 +299,14 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
       reordered[finalIndex - 1]?.sort_order ?? null,
       reordered[finalIndex + 1]?.sort_order ?? null,
     );
+
+    /*
+     * TouchSensor activates on a 220ms press with no movement requirement, so
+     * simply holding a card to read it lands here. Without this, every
+     * accidental long press writes a fresh sort_order and revalidates the route.
+     */
+    const serverTask = tasks.find((t) => t.id === active.id);
+    if (serverTask && serverTask.status === status && oldIndex === newIndex) return;
 
     const moved = { ...reordered[finalIndex], status, sort_order: sortOrder };
     const optimistic: Columns = {

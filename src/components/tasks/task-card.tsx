@@ -30,7 +30,9 @@ export function TaskCard({
     <div
       onClick={onClick}
       className={cn(
-        "group/card relative cursor-grab rounded-lg bg-bg p-2.5 active:cursor-grabbing",
+        // No cursor here: TaskCard also renders inside the DragOverlay, where
+        // its own cursor would win over the wrapper's grabbing cursor.
+        "group/card relative rounded-lg bg-bg p-2.5",
         "surface-e1",
         "transition-[box-shadow,transform] duration-100 ease-[cubic-bezier(.2,0,0,1)]",
         "hover:surface-e2-strong",
