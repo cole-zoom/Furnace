@@ -154,8 +154,18 @@ export async function getValidAccessToken(userId: string): Promise<string> {
 
   if (!res.ok) {
     const detail = await res.text();
-    // invalid_grant means the user revoked access or the token aged out.
-    if (detail.includes("invalid_grant")) throw new Error("GOOGLE_NEEDS_RECONSENT");
+    if (detail.includes("invalid_grant")) {
+      /*
+       * The refresh token is dead — revoked, or aged out because the OAuth app
+       * is in "Testing" publishing status, where Google expires them after 7
+       * days. Drop it rather than leaving a token that can never work again:
+       * getGoogleConnection decides `needsReconnect` from its absence, so
+       * keeping it would leave Settings cheerfully reporting "Connected" while
+       * every sync failed.
+       */
+      await clearRefreshToken(userId);
+      throw new Error("GOOGLE_NEEDS_RECONSENT");
+    }
     throw new Error(`Google token refresh failed (${res.status}): ${detail}`);
   }
 
@@ -221,6 +231,15 @@ export async function listCalendarEvents(
 
   const body = (await res.json()) as { items?: CalendarEvent[] };
   return (body.items ?? []).filter((e) => e.status !== "cancelled");
+}
+
+/** Forget a refresh token Google has already rejected. */
+async function clearRefreshToken(userId: string): Promise<void> {
+  const admin = createAdminClient();
+  await admin
+    .from("google_tokens")
+    .update({ refresh_token_enc: null, access_token_enc: null, expires_at: null })
+    .eq("user_id", userId);
 }
 
 export async function markSynced(userId: string): Promise<void> {
