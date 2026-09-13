@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { requireUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { TasksView } from "@/components/tasks/tasks-view";
+import { TasksSkeleton } from "@/components/tasks/tasks-skeleton";
 
 export const metadata: Metadata = { title: "Tasks" };
 
@@ -20,8 +21,9 @@ export default async function TasksPage() {
     .order("sort_order", { ascending: true });
 
   return (
-    // useSearchParams in TasksView needs a Suspense boundary above it.
-    <Suspense fallback={null}>
+    // useSearchParams in TasksView needs a Suspense boundary above it. The
+    // fallback must render something — null blanks the page on every refresh.
+    <Suspense fallback={<TasksSkeleton />}>
       <TasksView tasks={tasks ?? []} />
     </Suspense>
   );

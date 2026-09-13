@@ -17,13 +17,11 @@ export function TaskCard({
   task,
   onClick,
   dragging,
-  handleProps,
   className,
 }: {
   task: Task;
   onClick?: () => void;
   dragging?: boolean;
-  handleProps?: React.HTMLAttributes<HTMLElement>;
   className?: string;
 }) {
   const due = dueLabel(task.due_date);
@@ -32,7 +30,7 @@ export function TaskCard({
     <div
       onClick={onClick}
       className={cn(
-        "group/card relative cursor-pointer rounded-lg bg-bg p-2.5",
+        "group/card relative cursor-grab rounded-lg bg-bg p-2.5 active:cursor-grabbing",
         "surface-e1",
         "transition-[box-shadow,transform] duration-100 ease-[cubic-bezier(.2,0,0,1)]",
         "hover:surface-e2-strong",
@@ -42,18 +40,15 @@ export function TaskCard({
       )}
     >
       <div className="flex items-start gap-1.5">
-        {handleProps && (
-          <button
-            {...handleProps}
-            aria-label="Drag task"
-            onClick={(e) => e.stopPropagation()}
-            className="-ml-1 mt-[1px] cursor-grab touch-none rounded p-0.5 text-fg-disabled
-                       opacity-0 transition-opacity duration-[50ms] active:cursor-grabbing
-                       group-hover/card:opacity-100"
-          >
-            <GripVertical className="size-3.5" />
-          </button>
-        )}
+        {/* Affordance only — the drag listeners are on the card itself, so this
+            must not swallow pointer events. */}
+        <span
+          aria-hidden
+          className="pointer-events-none -ml-1 mt-[1px] p-0.5 text-fg-disabled opacity-0
+                     transition-opacity duration-[50ms] group-hover/card:opacity-100"
+        >
+          <GripVertical className="size-3.5" />
+        </span>
 
         <p
           className={cn(

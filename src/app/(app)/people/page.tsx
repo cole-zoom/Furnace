@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { requireUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { PeopleView } from "@/components/people-view";
+import { ListSkeleton } from "@/components/tasks/tasks-skeleton";
 
 export const metadata: Metadata = { title: "People" };
 
@@ -17,7 +18,7 @@ export default async function PeoplePage() {
     .order("last_met_at", { ascending: false, nullsFirst: false });
 
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<ListSkeleton />}>
       <PeopleView people={people ?? []} />
     </Suspense>
   );

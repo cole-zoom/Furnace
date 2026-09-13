@@ -35,7 +35,11 @@ type Columns = Record<TaskStatus, Task[]>;
 
 function group(tasks: Task[]): Columns {
   const next: Columns = { todo: [], in_progress: [], blocked: [], done: [] };
-  for (const task of tasks) next[task.status].push(task);
+  for (const task of tasks) {
+    // A status outside the enum would otherwise index to undefined and throw
+    // on .push, taking the whole board down with it.
+    (next[task.status] ?? next.todo).push(task);
+  }
   for (const status of STATUS_ORDER) {
     next[status].sort((a, b) => a.sort_order - b.sort_order);
   }
@@ -47,17 +51,20 @@ function SortableCard({ task, onEdit }: { task: Task; onEdit: (t: Task) => void 
     useSortable({ id: task.id });
 
   return (
+    /*
+     * The listeners live on the whole card, not on a grip. PointerSensor has a
+     * 4px activation distance, so a plain click still opens the editor and only
+     * actual movement starts a drag — which means the card can be grabbed
+     * anywhere without the click target becoming ambiguous.
+     */
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Translate.toString(transform), transition }}
-      className={isDragging ? "z-10" : undefined}
+      className={cn("touch-none", isDragging && "z-10")}
+      {...attributes}
+      {...listeners}
     >
-      <TaskCard
-        task={task}
-        dragging={isDragging}
-        handleProps={{ ...attributes, ...listeners }}
-        onClick={() => onEdit(task)}
-      />
+      <TaskCard task={task} dragging={isDragging} onClick={() => onEdit(task)} />
     </div>
   );
 }
