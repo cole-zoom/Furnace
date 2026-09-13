@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -14,6 +14,7 @@ import {
   type DragEndEvent,
   type DragOverEvent,
   type DragStartEvent,
+  type MouseSensorOptions,
 } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -45,7 +46,16 @@ class PrimaryMouseSensor extends MouseSensor {
   static activators = [
     {
       eventName: "onMouseDown" as const,
-      handler: ({ nativeEvent }: React.MouseEvent) => nativeEvent.button === 0,
+      handler: (
+        { nativeEvent }: React.MouseEvent,
+        { onActivation }: MouseSensorOptions,
+      ) => {
+        if (nativeEvent.button !== 0) return false;
+        // Stock MouseSensor fires this; dropping it would make onActivation
+        // silently dead for mouse while still firing for touch and keyboard.
+        onActivation?.({ event: nativeEvent });
+        return true;
+      },
     },
   ];
 }
@@ -88,7 +98,10 @@ function SortableCard({ task, onEdit }: { task: Task; onEdit: (t: Task) => void 
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Translate.toString(transform), transition }}
-      className={cn("cursor-grab active:cursor-grabbing", isDragging && "z-10")}
+      className={cn(
+        "cursor-grab touch-manipulation select-none no-callout active:cursor-grabbing",
+        isDragging && "z-10",
+      )}
       {...attributes}
       {...listeners}
       /*
@@ -191,6 +204,15 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
   const [columns, setColumns] = useState<Columns>(() => group(tasks));
   const [activeId, setActiveId] = useState<string | null>(null);
 
+  /*
+   * Where the card sat when the drag began. onDragOver rewrites `columns`
+   * mid-drag, so by the time onDragEnd runs the local indices no longer
+   * describe the starting position — comparing against them would call a
+   * drag-out-and-back-again a no-op and silently skip a real reorder, leaving
+   * the board showing a move that was never saved.
+   */
+  const origin = useRef<{ status: TaskStatus; index: number } | null>(null);
+
   // Server data wins whenever it changes — after a router.refresh(), an edit,
   // or a calendar sync. This is React's "adjust state during render" pattern
   // rather than a syncing effect: it re-renders immediately with the new value
@@ -247,7 +269,14 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
     return null;
   };
 
-  const onDragStart = (e: DragStartEvent) => setActiveId(String(e.active.id));
+  const onDragStart = (e: DragStartEvent) => {
+    const id = String(e.active.id);
+    setActiveId(id);
+    const from = columnOf(id);
+    origin.current = from
+      ? { status: from, index: columns[from].findIndex((t) => t.id === id) }
+      : null;
+  };
 
   /** Move the card between columns live, so the board reflows under the cursor. */
   const onDragOver = (e: DragOverEvent) => {
@@ -301,12 +330,15 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
     );
 
     /*
-     * TouchSensor activates on a 220ms press with no movement requirement, so
-     * simply holding a card to read it lands here. Without this, every
-     * accidental long press writes a fresh sort_order and revalidates the route.
+     * A drag that ends exactly where it started writes nothing. TouchSensor
+     * activates on a 220ms press with no movement requirement, so merely
+     * holding a card to read it reaches this point.
      */
-    const serverTask = tasks.find((t) => t.id === active.id);
-    if (serverTask && serverTask.status === status && oldIndex === newIndex) return;
+    const startedAt = origin.current;
+    origin.current = null;
+    if (startedAt && startedAt.status === status && startedAt.index === finalIndex) {
+      return;
+    }
 
     const moved = { ...reordered[finalIndex], status, sort_order: sortOrder };
     const optimistic: Columns = {
@@ -334,7 +366,10 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
       onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDragEnd={onDragEnd}
-      onDragCancel={() => setActiveId(null)}
+      onDragCancel={() => {
+        setActiveId(null);
+        origin.current = null;
+      }}
     >
       <div className="flex h-full gap-3 overflow-x-auto px-4 py-3">
         {STATUS_ORDER.map((status) => (

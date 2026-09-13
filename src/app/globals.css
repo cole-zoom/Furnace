@@ -280,6 +280,13 @@
 }
 
 /* Minecraft sprites must stay crunchy at any scale. */
+/* The whole task card is a long-press drag surface on touch, so the browser's
+   native text-selection callout has to be suppressed or it pops up over the
+   drag. Tailwind has select-none; the iOS callout needs this. */
+@utility no-callout {
+  -webkit-touch-callout: none;
+}
+
 @utility pixelated {
   image-rendering: pixelated;
   image-rendering: -moz-crisp-edges;
