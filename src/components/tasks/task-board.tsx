@@ -34,6 +34,22 @@ import type { Task, TaskStatus } from "@/lib/database.types";
 
 type Columns = Record<TaskStatus, Task[]>;
 
+/**
+ * MouseSensor's stock activator rejects only the right button, so a middle
+ * click — or a thumb back/forward button — moving 4px over a card would lift
+ * and persist a move. Now that the listeners cover the whole card rather than a
+ * small grip, that's easy to trigger by accident, and on Linux middle-click is
+ * the primary-selection paste gesture.
+ */
+class PrimaryMouseSensor extends MouseSensor {
+  static activators = [
+    {
+      eventName: "onMouseDown" as const,
+      handler: ({ nativeEvent }: React.MouseEvent) => nativeEvent.button === 0,
+    },
+  ];
+}
+
 function group(tasks: Task[]): Columns {
   const next: Columns = { todo: [], in_progress: [], blocked: [], done: [] };
   for (const task of tasks) {
@@ -62,10 +78,11 @@ function SortableCard({ task, onEdit }: { task: Task; onEdit: (t: Task) => void 
 
   return (
     /*
-     * The listeners live on the whole card, not on a grip. PointerSensor has a
-     * 4px activation distance, so a plain click still opens the editor and only
-     * actual movement starts a drag — which means the card can be grabbed
-     * anywhere without the click target becoming ambiguous.
+     * The listeners live on the whole card, not on a grip, so it can be grabbed
+     * anywhere. How a drag starts differs per input, which is the point:
+     *   mouse    — 4px of movement, so a plain click still opens the editor
+     *   touch    — 220ms press-and-hold, so a swipe pans the board instead
+     *   keyboard — Space (Enter is reserved for opening the editor)
      */
     <div
       ref={setNodeRef}
@@ -75,14 +92,23 @@ function SortableCard({ task, onEdit }: { task: Task; onEdit: (t: Task) => void 
       {...listeners}
       /*
        * `attributes` makes this a focusable role="button", but the click that
-       * opens the editor lives on the inner div and a div doesn't synthesize
-       * click from Enter. Without this a keyboard user can only ever drag.
+       * opens the editor lives on the inner div, and a div doesn't synthesize
+       * click from Enter — so without a handler here there'd be no keyboard
+       * path to the editor at all.
+       *
+       * It MUST delegate rather than replace. KeyboardSensor's activator is
+       * carried in `listeners` under this very same `onKeyDown` key, and an
+       * explicit prop wins over the spread above it — so returning early for
+       * every key silently kills keyboard dragging outright.
        */
       onKeyDown={(event) => {
         if (event.key === "Enter") {
           event.preventDefault();
           onEdit(task);
+          return;
         }
+        // Everything else, Space included, belongs to dnd-kit.
+        listeners?.onKeyDown?.(event);
       }}
     >
       <TaskCard task={task} dragging={isDragging} onClick={() => onEdit(task)} />
@@ -170,8 +196,9 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
   }
 
   const sensors = useSensors(
-    // Mouse: a few pixels of slop, so a click still opens the editor.
-    useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
+    // Mouse: left button only, with a few pixels of slop so a click still
+    // opens the editor.
+    useSensor(PrimaryMouseSensor, { activationConstraint: { distance: 4 } }),
     /*
      * Touch: long-press, NOT distance. The board is four 260px columns in a
      * horizontal scroller, so on a phone it has to be panned — and cards cover
