@@ -218,7 +218,12 @@ function Column({
   const meta = STATUS_META[status];
 
   return (
-    <div className="flex min-w-[260px] flex-1 flex-col">
+    /*
+     * The droppable is the whole column, header included. Scoping it to just
+     * the card well left the header strip as a dead zone, and aiming for the
+     * top of a column is exactly where people release.
+     */
+    <div ref={setNodeRef} className="flex min-w-[260px] flex-1 flex-col">
       <div className="mb-2 flex h-7 items-center gap-2 px-0.5">
         <span className={cn("size-1.5 shrink-0 rounded-full", meta.dot)} />
         <span className="text-[13px] font-semibold text-fg">{meta.label}</span>
@@ -236,7 +241,6 @@ function Column({
       </div>
 
       <div
-        ref={setNodeRef}
         className={cn(
           "flex min-h-[120px] flex-1 flex-col gap-1.5 rounded-lg p-1.5",
           "transition-colors duration-100",
@@ -294,6 +298,16 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
    */
   const beforeDrag = useRef<{ columns: Columns; tasks: Task[] } | null>(null);
 
+  /*
+   * The last droppable the cursor was genuinely over.
+   *
+   * Pointer-only collision reports nothing in the gaps between columns and in
+   * the board's own padding. Releasing there would otherwise hit the `!over`
+   * path and revert the whole drag with no feedback — even though onDragOver
+   * has already shown the card in its new column. Committing to the last real
+   * target is what the board was visibly promising.
+   */
+  const lastOver = useRef<string | null>(null);
 
   // Server data wins whenever it changes — after a router.refresh(), an edit,
   // or a calendar sync. This is React's "adjust state during render" pattern
@@ -359,6 +373,7 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
       ? { status: from, index: columns[from].findIndex((t) => t.id === id) }
       : null;
     beforeDrag.current = { columns, tasks };
+    lastOver.current = null;
   };
 
   /** Put the board back exactly as it was before the drag started. */
@@ -381,7 +396,10 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
   /** Move the card between columns live, so the board reflows under the cursor. */
   const onDragOver = (e: DragOverEvent) => {
     const { active, over } = e;
+    // Leaving a droppable reports null; hold the last real one rather than
+    // forgetting where the drag was heading.
     if (!over) return;
+    lastOver.current = String(over.id);
 
     const from = columnOf(String(active.id));
     const to = columnOf(String(over.id));
@@ -409,12 +427,17 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
   const onDragEnd = (e: DragEndEvent) => {
     const { active, over } = e;
     setActiveId(null);
-    if (!over) {
+
+    // A release in a gutter or on the board's padding reports no target; fall
+    // back to wherever the drag was last genuinely over.
+    const overId = over ? String(over.id) : lastOver.current;
+    lastOver.current = null;
+    if (!overId) {
       abandonDrag();
       return;
     }
 
-    const status = columnOf(String(over.id)) ?? columnOf(String(active.id));
+    const status = columnOf(overId) ?? columnOf(String(active.id));
     if (!status) {
       abandonDrag();
       return;
@@ -435,7 +458,7 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
      * saved it. onDragOver has already placed the card wherever it belongs, so
      * a column-level drop means "stay put".
      */
-    const overIndex = list.findIndex((t) => t.id === over.id);
+    const overIndex = list.findIndex((t) => t.id === overId);
     const newIndex = overIndex >= 0 ? overIndex : oldIndex;
 
     const reordered = oldIndex === newIndex ? list : arrayMove(list, oldIndex, newIndex);
