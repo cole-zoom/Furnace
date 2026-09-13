@@ -7,7 +7,6 @@ import {
   KeyboardSensor,
   MouseSensor,
   TouchSensor,
-  getFirstCollision,
   pointerWithin,
   rectIntersection,
   useDroppable,
@@ -82,12 +81,34 @@ const warnedUnknownStatus = new Set<string>();
  * fallback for keyboard dragging, where there is no pointer.
  */
 const collisionDetection: CollisionDetection = (args) => {
+  /*
+   * The active card is excluded so it can't match itself: its rect travels with
+   * the drag, so under any distance-based strategy it sits at zero and wins
+   * everything.
+   *
+   * When there IS a pointer, the answer comes from the pointer alone — never
+   * from `rectIntersection`, which measures the dragged card's ghost rect. That
+   * distinction is load-bearing. Falling back to rect overlap let a cursor
+   * sitting still in one column resolve to a *different* column, so onDragOver
+   * reparented the card, the reflow flipped the collision back, and the board
+   * ping-ponged into "Maximum update depth exceeded":
+   *
+   *   over=column:in_progress  from=todo         to=in_progress
+   *   over=Card Y              from=in_progress  to=todo
+   *   ...repeating
+   *
+   * Returning nothing when the pointer is over nothing is the honest answer,
+   * and it makes that cycle unrepresentable rather than merely rate-limited.
+   *
+   * Keyboard drags genuinely have no pointer, so they still use rect overlap —
+   * and they move one discrete step per keypress, so they can't oscillate.
+   */
   const candidates = args.droppableContainers.filter(
     (container) => container.id !== args.active.id,
   );
 
-  const byPointer = pointerWithin({ ...args, droppableContainers: candidates });
-  if (getFirstCollision(byPointer)) {
+  if (args.pointerCoordinates) {
+    const byPointer = pointerWithin({ ...args, droppableContainers: candidates });
     // Prefer a card over the column containing it, so drops can be positioned.
     const card = byPointer.find((c) => !String(c.id).startsWith("column:"));
     return card ? [card] : byPointer;
@@ -197,7 +218,12 @@ function Column({
   const meta = STATUS_META[status];
 
   return (
-    <div className="flex min-w-[260px] flex-1 flex-col">
+    /*
+     * The droppable is the whole column, header included. Scoping it to just
+     * the card well left the header strip as a dead zone, and aiming for the
+     * top of a column is exactly where people release.
+     */
+    <div ref={setNodeRef} className="flex min-w-[260px] flex-1 flex-col">
       <div className="mb-2 flex h-7 items-center gap-2 px-0.5">
         <span className={cn("size-1.5 shrink-0 rounded-full", meta.dot)} />
         <span className="text-[13px] font-semibold text-fg">{meta.label}</span>
@@ -215,7 +241,6 @@ function Column({
       </div>
 
       <div
-        ref={setNodeRef}
         className={cn(
           "flex min-h-[120px] flex-1 flex-col gap-1.5 rounded-lg p-1.5",
           "transition-colors duration-100",
@@ -272,6 +297,17 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
    * mid-drag. Escape during a keyboard drag does the same.
    */
   const beforeDrag = useRef<{ columns: Columns; tasks: Task[] } | null>(null);
+
+  /*
+   * The last droppable the cursor was genuinely over.
+   *
+   * Pointer-only collision reports nothing in the gaps between columns and in
+   * the board's own padding. Releasing there would otherwise hit the `!over`
+   * path and revert the whole drag with no feedback — even though onDragOver
+   * has already shown the card in its new column. Committing to the last real
+   * target is what the board was visibly promising.
+   */
+  const lastOver = useRef<string | null>(null);
 
   // Server data wins whenever it changes — after a router.refresh(), an edit,
   // or a calendar sync. This is React's "adjust state during render" pattern
@@ -337,6 +373,7 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
       ? { status: from, index: columns[from].findIndex((t) => t.id === id) }
       : null;
     beforeDrag.current = { columns, tasks };
+    lastOver.current = null;
   };
 
   /** Put the board back exactly as it was before the drag started. */
@@ -359,7 +396,10 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
   /** Move the card between columns live, so the board reflows under the cursor. */
   const onDragOver = (e: DragOverEvent) => {
     const { active, over } = e;
+    // Leaving a droppable reports null; hold the last real one rather than
+    // forgetting where the drag was heading.
     if (!over) return;
+    lastOver.current = String(over.id);
 
     const from = columnOf(String(active.id));
     const to = columnOf(String(over.id));
@@ -387,12 +427,17 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
   const onDragEnd = (e: DragEndEvent) => {
     const { active, over } = e;
     setActiveId(null);
-    if (!over) {
+
+    // A release in a gutter or on the board's padding reports no target; fall
+    // back to wherever the drag was last genuinely over.
+    const overId = over ? String(over.id) : lastOver.current;
+    lastOver.current = null;
+    if (!overId) {
       abandonDrag();
       return;
     }
 
-    const status = columnOf(String(over.id)) ?? columnOf(String(active.id));
+    const status = columnOf(overId) ?? columnOf(String(active.id));
     if (!status) {
       abandonDrag();
       return;
@@ -413,7 +458,7 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
      * saved it. onDragOver has already placed the card wherever it belongs, so
      * a column-level drop means "stay put".
      */
-    const overIndex = list.findIndex((t) => t.id === over.id);
+    const overIndex = list.findIndex((t) => t.id === overId);
     const newIndex = overIndex >= 0 ? overIndex : oldIndex;
 
     const reordered = oldIndex === newIndex ? list : arrayMove(list, oldIndex, newIndex);
@@ -431,11 +476,19 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
      * holding a card to read it reaches this point.
      */
     const startedAt = origin.current;
-    origin.current = null;
-    beforeDrag.current = null;
     if (startedAt && startedAt.status === status && startedAt.index === finalIndex) {
+      /*
+       * Nothing to persist — but onDragOver has been rewriting `columns`
+       * throughout the drag, so local state is very likely NOT the pre-drag
+       * arrangement even though the card ends up back at its original index.
+       * Returning bare would leave the board rendering the card in a slot the
+       * server never agreed to. abandonDrag puts it back exactly.
+       */
+      abandonDrag();
       return;
     }
+    origin.current = null;
+    beforeDrag.current = null;
 
     const moved = { ...reordered[finalIndex], status, sort_order: sortOrder };
     const optimistic: Columns = {
