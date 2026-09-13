@@ -7,12 +7,15 @@ import {
   KeyboardSensor,
   MouseSensor,
   TouchSensor,
-  closestCorners,
+  getFirstCollision,
+  pointerWithin,
+  rectIntersection,
   useDroppable,
   useSensor,
   useSensors,
   type DragEndEvent,
   type DragOverEvent,
+  type CollisionDetection,
   type DragStartEvent,
   type MouseSensorOptions,
 } from "@dnd-kit/core";
@@ -60,6 +63,39 @@ class PrimaryMouseSensor extends MouseSensor {
   ];
 }
 
+/** group() runs during render, so the warning must not fire once per pass. */
+const warnedUnknownStatus = new Set<string>();
+
+/**
+ * Which droppable is under the cursor.
+ *
+ * `closestCorners` — dnd-kit's usual sortable-list default — cannot handle this
+ * board. A sortable card is a droppable as well as a draggable, and the dragged
+ * card's own rect travels with the cursor, so it sits at distance zero and wins
+ * every comparison; meanwhile a column droppable is full-height, so three of its
+ * four corners are hundreds of pixels away and it loses on corner distance even
+ * when the cursor is plainly inside it. Net effect: `over` was always the card
+ * being dragged, and dropping onto an empty column did nothing at all.
+ *
+ * Pointer containment is the honest question here — "what is under the cursor" —
+ * with the dragged card excluded so it can't match itself, and a rect-overlap
+ * fallback for keyboard dragging, where there is no pointer.
+ */
+const collisionDetection: CollisionDetection = (args) => {
+  const candidates = args.droppableContainers.filter(
+    (container) => container.id !== args.active.id,
+  );
+
+  const byPointer = pointerWithin({ ...args, droppableContainers: candidates });
+  if (getFirstCollision(byPointer)) {
+    // Prefer a card over the column containing it, so drops can be positioned.
+    const card = byPointer.find((c) => !String(c.id).startsWith("column:"));
+    return card ? [card] : byPointer;
+  }
+
+  return rectIntersection({ ...args, droppableContainers: candidates });
+};
+
 function group(tasks: Task[]): Columns {
   const next: Columns = { todo: [], in_progress: [], blocked: [], done: [] };
   for (const task of tasks) {
@@ -72,7 +108,10 @@ function group(tasks: Task[]): Columns {
     if (Object.hasOwn(next, task.status)) {
       next[task.status].push(task);
     } else {
-      console.warn(`[furnace] task ${task.id} has unknown status`, task.status);
+      if (!warnedUnknownStatus.has(task.id)) {
+        warnedUnknownStatus.add(task.id);
+        console.warn(`[furnace] task ${task.id} has unknown status`, task.status);
+      }
       next.todo.push(task);
     }
   }
@@ -99,6 +138,14 @@ function SortableCard({ task, onEdit }: { task: Task; onEdit: (t: Task) => void 
       ref={setNodeRef}
       style={{ transform: CSS.Translate.toString(transform), transition }}
       className={cn(
+        /*
+         * select-none and no-callout because the whole card is a long-press
+         * drag surface — without them a press-and-hold raises the native text
+         * selection callout over it. The cost is that card text can't be
+         * drag-selected to copy; the editor dialog is where you do that. On
+         * desktop this loses nothing, since a mousedown-and-move already starts
+         * a drag rather than a selection.
+         */
         "cursor-grab touch-manipulation select-none no-callout active:cursor-grabbing",
         isDragging && "z-10",
       )}
@@ -213,6 +260,19 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
    */
   const origin = useRef<{ status: TaskStatus; index: number } | null>(null);
 
+  /*
+   * The board exactly as it looked before this drag. onDragOver moves the card
+   * between columns optimistically, and a cancelled drag would otherwise leave
+   * it sitting in the new column having persisted nothing — the board showing a
+   * move that never happened until the next refresh snaps it back.
+   *
+   * Cancels are not rare here: AbstractPointerSensor wires handleCancel to
+   * visibilitychange, resize and touchcancel, so on a phone that's backgrounding
+   * the app, pulling down the notification shade, or a second finger landing
+   * mid-drag. Escape during a keyboard drag does the same.
+   */
+  const beforeDrag = useRef<Columns | null>(null);
+
   // Server data wins whenever it changes — after a router.refresh(), an edit,
   // or a calendar sync. This is React's "adjust state during render" pattern
   // rather than a syncing effect: it re-renders immediately with the new value
@@ -276,6 +336,15 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
     origin.current = from
       ? { status: from, index: columns[from].findIndex((t) => t.id === id) }
       : null;
+    beforeDrag.current = columns;
+  };
+
+  /** Put the board back exactly as it was before the drag started. */
+  const abandonDrag = () => {
+    if (beforeDrag.current) setColumns(beforeDrag.current);
+    beforeDrag.current = null;
+    origin.current = null;
+    setActiveId(null);
   };
 
   /** Move the card between columns live, so the board reflows under the cursor. */
@@ -309,7 +378,10 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
   const onDragEnd = (e: DragEndEvent) => {
     const { active, over } = e;
     setActiveId(null);
-    if (!over) return;
+    if (!over) {
+      abandonDrag();
+      return;
+    }
 
     const status = columnOf(String(over.id)) ?? columnOf(String(active.id));
     if (!status) return;
@@ -318,7 +390,10 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
     const oldIndex = list.findIndex((t) => t.id === active.id);
     const overIndex = list.findIndex((t) => t.id === over.id);
     const newIndex = overIndex >= 0 ? overIndex : list.length - 1;
-    if (oldIndex < 0) return;
+    if (oldIndex < 0) {
+      abandonDrag();
+      return;
+    }
 
     const reordered = oldIndex === newIndex ? list : arrayMove(list, oldIndex, newIndex);
     const finalIndex = reordered.findIndex((t) => t.id === active.id);
@@ -336,6 +411,7 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
      */
     const startedAt = origin.current;
     origin.current = null;
+    beforeDrag.current = null;
     if (startedAt && startedAt.status === status && startedAt.index === finalIndex) {
       return;
     }
@@ -362,14 +438,11 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
       // than in the browser, which trips a hydration mismatch on every load.
       id="furnace-task-board"
       sensors={sensors}
-      collisionDetection={closestCorners}
+      collisionDetection={collisionDetection}
       onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDragEnd={onDragEnd}
-      onDragCancel={() => {
-        setActiveId(null);
-        origin.current = null;
-      }}
+      onDragCancel={abandonDrag}
     >
       <div className="flex h-full gap-3 overflow-x-auto px-4 py-3">
         {STATUS_ORDER.map((status) => (
