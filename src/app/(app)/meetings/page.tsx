@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { requireUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { MeetingsView } from "@/components/meetings/meetings-view";
+import { requestTime } from "@/lib/clock";
 
 export const metadata: Metadata = { title: "Meetings" };
 
@@ -33,6 +34,18 @@ export default async function MeetingsPage() {
   );
 
   return (
-    <MeetingsView meetings={meetings ?? []} openActionCounts={openActionCounts} />
+    <MeetingsView
+      meetings={meetings ?? []}
+      openActionCounts={openActionCounts}
+      /*
+       * The clock comes from the server, not the client. Reading it during
+       * render is impure, and freezing it at mount would leave a meeting that
+       * has since started sitting in "Upcoming" — hidden from the default tab,
+       * which is the exact burial this feature exists to prevent. This page is
+       * dynamic, so every navigation and every router.refresh() re-renders it
+       * with a fresh value.
+       */
+      now={requestTime()}
+    />
   );
 }

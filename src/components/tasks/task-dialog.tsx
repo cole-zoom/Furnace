@@ -5,12 +5,9 @@ import { useRouter } from "next/navigation";
 import { Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Dialog } from "@/components/ui/dialog";
-import {
-  FromMeetingChip,
-  TaskMeetingPanel,
-} from "@/components/tasks/task-meeting-panel";
+import { TaskMeetingPanel } from "@/components/tasks/task-meeting-panel";
 import { Button } from "@/components/ui/button";
-import { Field, Input, Label, Select, Textarea } from "@/components/ui/field";
+import { Field, Input, Select, Textarea } from "@/components/ui/field";
 import { PRIORITY_META, PRIORITY_ORDER, STATUS_META, STATUS_ORDER } from "@/components/ui/badge";
 import { createTask, deleteTask, updateTask } from "@/lib/actions";
 import type { Task, TaskPriority, TaskStatus } from "@/lib/database.types";
@@ -124,13 +121,7 @@ export function TaskDialog({ open, onClose, task, defaultStatus }: TaskDialogPro
       <div className="space-y-3.5">
         {/* Why this task exists, without leaving the board to find out. */}
         {task?.meeting_id && (
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Label>Context</Label>
-              <FromMeetingChip />
-            </div>
-            <TaskMeetingPanel meetingId={task.meeting_id} />
-          </div>
+          <TaskMeetingPanel meetingId={task.meeting_id} onNavigate={onClose} />
         )}
 
         <Field label="Title">

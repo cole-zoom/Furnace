@@ -32,9 +32,12 @@ const AI_STATUS: Record<
 export function MeetingsView({
   meetings,
   openActionCounts,
+  now,
 }: {
   meetings: Meeting[];
   openActionCounts: Record<string, number>;
+  /** Epoch ms, resolved on the server so it can't drift or be impure here. */
+  now: number;
 }) {
   const { pasteTranscript } = useShell();
   const router = useRouter();
@@ -65,18 +68,14 @@ export function MeetingsView({
       }
     });
 
-  /*
-   * "Now" is read once, in a lazy initializer, rather than on every render —
-   * a clock read in the render body is impure, and a value that drifts between
-   * renders would let a meeting silently change which tab it belongs to
-   * mid-interaction. It re-reads whenever the route refreshes, which is exactly
-   * when the data behind it changes anyway.
-   */
-  const [now] = useState(() => Date.now());
   const isUpcoming = (m: Meeting) =>
     Boolean(m.start_time) && new Date(m.start_time as string).getTime() > now;
 
+  // Counted over everything, not over `visible` — these describe the calendar,
+  // not the current filter, and mixing the two produced a header that claimed
+  // "3 past" when you had twenty.
   const upcomingCount = meetings.filter(isUpcoming).length;
+  const pastCount = meetings.length - upcomingCount;
 
   const visible = meetings.filter((m) => {
     if (when === "past" && isUpcoming(m)) return false;
@@ -91,9 +90,11 @@ export function MeetingsView({
       <PageHeader
         title="Meetings"
         subtitle={
-          when === "past" && upcomingCount > 0
-            ? `${visible.length} past · ${upcomingCount} upcoming`
-            : `${visible.length} of ${meetings.length}`
+          filter !== "all"
+            ? `${visible.length} of ${meetings.length}`
+            : when === "past" && upcomingCount > 0
+              ? `${pastCount} past · ${upcomingCount} upcoming`
+              : `${visible.length} of ${meetings.length}`
         }
         actions={
           <>
@@ -176,20 +177,27 @@ export function MeetingsView({
         ) : visible.length === 0 ? (
           <EmptyState
             icon={<CalendarDays className="size-4" />}
+            /*
+             * `visible` is filtered on two axes, so the explanation has to name
+             * the right one. Blaming the time tab while a status filter is what
+             * actually hid everything tells the reader something false.
+             */
             title={
-              when === "past"
-                ? "No past meetings yet"
-                : when === "upcoming"
-                  ? "Nothing on the calendar ahead"
-                  : "Nothing matches that filter"
+              filter !== "all"
+                ? "Nothing matches that filter"
+                : when === "past"
+                  ? "No past meetings yet"
+                  : when === "upcoming"
+                    ? "Nothing on the calendar ahead"
+                    : "No meetings yet"
             }
             description={
-              when === "past" && upcomingCount > 0
+              filter === "all" && when === "past" && upcomingCount > 0
                 ? `You have ${upcomingCount} upcoming — they'll show up here once they've happened.`
                 : undefined
             }
             action={
-              when === "past" && upcomingCount > 0 ? (
+              filter === "all" && when === "past" && upcomingCount > 0 ? (
                 <Button size="sm" onClick={() => setWhen("upcoming")}>
                   See upcoming
                 </Button>

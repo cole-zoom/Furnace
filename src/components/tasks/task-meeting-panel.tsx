@@ -6,13 +6,28 @@ import { ArrowUpRight, CalendarDays, Check, Lightbulb, Sparkles } from "lucide-r
 import { createClient } from "@/lib/supabase/client";
 import { Skeleton } from "@/components/ui/misc";
 import { Chip } from "@/components/ui/badge";
+import { Label } from "@/components/ui/field";
 import { cn, formatDateTime } from "@/lib/utils";
 import type { Meeting } from "@/lib/database.types";
 
+/*
+ * Deliberately omits `transcript`. It's only ever needed as a yes/no, and it
+ * can hold half a megabyte of raw text — shipping that to the browser to choose
+ * between two short sentences would undo the whole reason this is a separate
+ * fetch. `ai_status` answers the same question.
+ */
 export type MeetingContext = Pick<
   Meeting,
-  "id" | "title" | "start_time" | "summary" | "key_points" | "decisions" | "ai_status" | "transcript"
+  "id" | "title" | "start_time" | "summary" | "key_points" | "decisions" | "ai_status"
 >;
+
+const SELECT = "id, title, start_time, summary, key_points, decisions, ai_status";
+
+type State =
+  | { kind: "loading" }
+  | { kind: "ready"; meeting: MeetingContext }
+  | { kind: "gone" }
+  | { kind: "error" };
 
 /**
  * The meeting a task came out of, shown inside the task editor.
@@ -20,34 +35,44 @@ export type MeetingContext = Pick<
  * Tasks are the view this app is actually lived in, so a task promoted from a
  * transcript shouldn't make you leave to remember why it exists. Fetched on
  * open rather than joined into the board query: most tasks have no meeting, and
- * the board would otherwise carry every transcript's worth of summary text just
- * to render a list of titles.
+ * the board would otherwise carry every transcript's summary just to render a
+ * list of titles.
  *
  * Read with the browser client, so RLS scopes it — a meeting id that isn't
  * yours returns nothing rather than someone else's notes.
  */
-export function TaskMeetingPanel({ meetingId }: { meetingId: string }) {
-  const [meeting, setMeeting] = useState<MeetingContext | null>(null);
-  const [state, setState] = useState<"loading" | "ready" | "missing">("loading");
+export function TaskMeetingPanel({
+  meetingId,
+  onNavigate,
+}: {
+  meetingId: string;
+  /** Called before following the link out, so the dialog can get out of the way. */
+  onNavigate?: () => void;
+}) {
+  const [state, setState] = useState<State>({ kind: "loading" });
 
   useEffect(() => {
     let cancelled = false;
 
     void (async () => {
       const supabase = createClient();
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("meetings")
-        .select("id, title, start_time, summary, key_points, decisions, ai_status, transcript")
+        .select(SELECT)
         .eq("id", meetingId)
         .maybeSingle();
 
       if (cancelled) return;
-      if (!data) {
-        setState("missing");
+
+      // A failed request and a deleted meeting both yield no row. Telling them
+      // apart matters: one is worth reporting, the other is just history.
+      if (error) {
+        console.error("[furnace] could not load meeting context:", error.message);
+        setState({ kind: "error" });
         return;
       }
-      setMeeting(data as MeetingContext);
-      setState("ready");
+
+      setState(data ? { kind: "ready", meeting: data as MeetingContext } : { kind: "gone" });
     })();
 
     return () => {
@@ -55,26 +80,65 @@ export function TaskMeetingPanel({ meetingId }: { meetingId: string }) {
     };
   }, [meetingId]);
 
-  if (state === "loading") {
+  if (state.kind === "loading") {
     return (
-      <section className="space-y-2 rounded-lg bg-bg-raised p-3 surface">
-        <Skeleton className="h-3 w-24" />
-        <Skeleton className="h-3.5 w-48" />
-        <Skeleton className="h-3 w-full" />
-        <Skeleton className="h-3 w-4/5" />
-      </section>
+      <Framed>
+        <div className="space-y-2 rounded-lg bg-bg-raised p-3 surface">
+          <Skeleton className="h-3.5 w-48" />
+          <Skeleton className="h-3 w-full" />
+          <Skeleton className="h-3 w-4/5" />
+        </div>
+      </Framed>
     );
   }
 
-  // The meeting was deleted, or never belonged to this user. Either way there's
-  // nothing to show and nothing worth alarming anyone about.
-  if (state === "missing" || !meeting) return null;
+  if (state.kind === "error") {
+    return (
+      <Framed>
+        <p className="rounded-lg bg-bg-raised p-3 text-[12px] text-fg-caption surface">
+          Couldn&apos;t load the meeting this came from.
+        </p>
+      </Framed>
+    );
+  }
 
-  return <MeetingContextCard meeting={meeting} />;
+  // The meeting was deleted. Nothing to show, and nothing worth a label either.
+  if (state.kind === "gone") return null;
+
+  return (
+    <Framed>
+      <MeetingContextCard meeting={state.meeting} onNavigate={onNavigate} />
+    </Framed>
+  );
+}
+
+/**
+ * Owns the "Context" label as well as the card, so a meeting that turns out to
+ * be gone doesn't leave a heading floating over empty space.
+ */
+function Framed({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <Label>Context</Label>
+        <Chip tone="ember">
+          <Sparkles className="size-2.5" />
+          From a meeting
+        </Chip>
+      </div>
+      {children}
+    </div>
+  );
 }
 
 /** Presentation only, so it can be rendered without a session behind it. */
-export function MeetingContextCard({ meeting }: { meeting: MeetingContext }) {
+export function MeetingContextCard({
+  meeting,
+  onNavigate,
+}: {
+  meeting: MeetingContext;
+  onNavigate?: () => void;
+}) {
   const hasInsights =
     Boolean(meeting.summary) || meeting.key_points.length > 0 || meeting.decisions.length > 0;
 
@@ -90,6 +154,12 @@ export function MeetingContextCard({ meeting }: { meeting: MeetingContext }) {
         </div>
         <Link
           href={`/meetings/${meeting.id}`}
+          /*
+           * The dialog lives in the (app) layout, which survives client-side
+           * navigation — so without this the overlay, scroll lock and focus
+           * trap all follow you to the meeting page and sit on top of it.
+           */
+          onClick={onNavigate}
           className="inline-flex shrink-0 items-center gap-0.5 text-[12px] text-link
                      transition-colors duration-[50ms] hover:text-link-strong"
         >
@@ -100,11 +170,11 @@ export function MeetingContextCard({ meeting }: { meeting: MeetingContext }) {
 
       {!hasInsights ? (
         <p className="text-[12px] leading-[1.5] text-fg-caption">
-          {meeting.transcript
-            ? meeting.ai_status === "failed"
-              ? "The transcript couldn't be summarised. Open the meeting to retry."
-              : "Transcript saved, no summary yet."
-            : "No transcript yet — paste one on the meeting to get a summary."}
+          {meeting.ai_status === "failed"
+            ? "The transcript couldn't be summarised. Open the meeting to retry."
+            : meeting.ai_status === "processing"
+              ? "Summarising the transcript…"
+              : "No transcript yet — paste one on the meeting to get a summary."}
         </p>
       ) : (
         <div className="space-y-2.5">
@@ -161,15 +231,5 @@ function Section({
       </p>
       <ul className="space-y-1">{children}</ul>
     </div>
-  );
-}
-
-/** Small marker for the dialog header when a task came from a meeting. */
-export function FromMeetingChip() {
-  return (
-    <Chip tone="ember">
-      <Sparkles className="size-2.5" />
-      From a meeting
-    </Chip>
   );
 }
