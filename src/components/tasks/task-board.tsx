@@ -1,13 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
   KeyboardSensor,
   MouseSensor,
   TouchSensor,
-  getFirstCollision,
   pointerWithin,
   rectIntersection,
   useDroppable,
@@ -83,29 +82,38 @@ const warnedUnknownStatus = new Set<string>();
  */
 const collisionDetection: CollisionDetection = (args) => {
   /*
-   * The active card is excluded, and must stay excluded. Leaving it in lets
-   * `over` alternate between the card (whose rect dnd-kit re-measures as the
-   * board reflows) and the column under the cursor, and since onDragOver writes
-   * state on every flip, that oscillates into "Maximum update depth exceeded"
-   * and takes the board down mid-drag. Measured, not theorised.
+   * The active card is excluded so it can't match itself: its rect travels with
+   * the drag, so under any distance-based strategy it sits at zero and wins
+   * everything.
    *
-   * The cost is that "the pointer is still on my own slot" and "the pointer is
-   * in the column's empty tail" both read as a column hit, so onDragEnd treats
-   * a same-column tail drop as "stay put" — to send a card to the bottom of its
-   * own column, drop it on the last card. Wrong-but-safe beats a crash.
+   * When there IS a pointer, the answer comes from the pointer alone — never
+   * from `rectIntersection`, which measures the dragged card's ghost rect. That
+   * distinction is load-bearing. Falling back to rect overlap let a cursor
+   * sitting still in one column resolve to a *different* column, so onDragOver
+   * reparented the card, the reflow flipped the collision back, and the board
+   * ping-ponged into "Maximum update depth exceeded":
+   *
+   *   over=column:in_progress  from=todo         to=in_progress
+   *   over=Card Y              from=in_progress  to=todo
+   *   ...repeating
+   *
+   * Returning nothing when the pointer is over nothing is the honest answer,
+   * and it makes that cycle unrepresentable rather than merely rate-limited.
+   *
+   * Keyboard drags genuinely have no pointer, so they still use rect overlap —
+   * and they move one discrete step per keypress, so they can't oscillate.
    */
   const candidates = args.droppableContainers.filter(
     (container) => container.id !== args.active.id,
   );
 
-  const byPointer = pointerWithin({ ...args, droppableContainers: candidates });
-  if (getFirstCollision(byPointer)) {
+  if (args.pointerCoordinates) {
+    const byPointer = pointerWithin({ ...args, droppableContainers: candidates });
     // Prefer a card over the column containing it, so drops can be positioned.
     const card = byPointer.find((c) => !String(c.id).startsWith("column:"));
     return card ? [card] : byPointer;
   }
 
-  // Keyboard drags have no pointer; fall back to rect overlap.
   return rectIntersection({ ...args, droppableContainers: candidates });
 };
 
@@ -286,30 +294,6 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
    */
   const beforeDrag = useRef<{ columns: Columns; tasks: Task[] } | null>(null);
 
-  /*
-   * True from the moment a drag reparents a card until the board has painted.
-   *
-   * Reparenting reflows both columns, which changes what sits under the cursor,
-   * which flips the collision back to the original column, which reparents
-   * again — the card ping-pongs between two columns until React bails out with
-   * "Maximum update depth exceeded" and the whole board hits the error
-   * boundary. Measured, not hypothetical:
-   *
-   *   over=column:in_progress  from=todo         to=in_progress
-   *   over=Card Y              from=in_progress  to=todo
-   *   ...repeating
-   *
-   * Allowing at most one reparent per frame breaks the cycle while leaving
-   * genuine column changes — which are always frames apart — untouched.
-   */
-  const settling = useRef(false);
-
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => {
-      settling.current = false;
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [columns]);
 
   // Server data wins whenever it changes — after a router.refresh(), an edit,
   // or a calendar sync. This is React's "adjust state during render" pattern
@@ -403,10 +387,6 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
     const to = columnOf(String(over.id));
     if (!from || !to || from === to) return;
 
-    // One reparent per frame; see `settling`.
-    if (settling.current) return;
-    settling.current = true;
-
     setColumns((prev) => {
       const moving = prev[from].find((t) => t.id === active.id);
       if (!moving) return prev;
@@ -454,12 +434,6 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
      * press on touch, silently relocated the card to the end of its column and
      * saved it. onDragOver has already placed the card wherever it belongs, so
      * a column-level drop means "stay put".
-     */
-    /*
-     * A column-level `over` means the cursor isn't on another card — either
-     * still on the dragged card's own slot, or in the column's empty tail. Those
-     * are indistinguishable here (see collisionDetection), and onDragOver has
-     * already placed the card, so both mean "keep the index you have".
      */
     const overIndex = list.findIndex((t) => t.id === over.id);
     const newIndex = overIndex >= 0 ? overIndex : oldIndex;
