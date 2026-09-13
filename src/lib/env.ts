@@ -57,8 +57,27 @@ export const env = {
   get tokenEncryptionKey() {
     return optional("TOKEN_ENCRYPTION_KEY");
   },
+  /**
+   * The app's own public origin, used as the redirect base after OAuth.
+   *
+   * Vercel already knows this, so don't make anyone type it twice:
+   * VERCEL_PROJECT_PRODUCTION_URL is the project's *stable* production domain
+   * and is injected automatically. Note it carries no scheme.
+   *
+   * Deliberately NOT VERCEL_URL — that's the per-deployment hostname and
+   * changes on every push, so it can never match the fixed redirect allowlists
+   * in Supabase and Google.
+   *
+   * An explicit NEXT_PUBLIC_SITE_URL still wins, for custom domains.
+   */
   get siteUrl() {
-    return process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
+    const explicit = process.env.NEXT_PUBLIC_SITE_URL;
+    if (explicit) return explicit.replace(/\/+$/, "");
+
+    const vercel = process.env.VERCEL_PROJECT_PRODUCTION_URL;
+    if (vercel) return `https://${vercel.replace(/\/+$/, "")}`;
+
+    return "http://localhost:3000";
   },
 
   /**

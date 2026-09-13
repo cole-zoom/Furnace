@@ -72,7 +72,7 @@ const VARS: Item[] = [
   {
     key: "NEXT_PUBLIC_SITE_URL",
     what: "Public site URL",
-    where: "this deployment's domain",
+    where: "auto-detected on Vercel; set only for a custom domain",
     required: false,
   },
 ];
