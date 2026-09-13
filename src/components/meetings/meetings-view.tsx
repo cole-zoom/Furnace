@@ -39,6 +39,12 @@ export function MeetingsView({
   const { pasteTranscript } = useShell();
   const router = useRouter();
   const [syncing, startSync] = useTransition();
+  /*
+   * Past by default. Calendar sync pulls three weeks forward, so without this
+   * the list opens on meetings that haven't happened and can't have a
+   * transcript yet — burying the ones you actually want to write up.
+   */
+  const [when, setWhen] = useState<"past" | "upcoming" | "all">("past");
   const [filter, setFilter] = useState<"all" | "summarised" | "needs-transcript">("all");
 
   const sync = () =>
@@ -59,7 +65,22 @@ export function MeetingsView({
       }
     });
 
+  /*
+   * "Now" is read once, in a lazy initializer, rather than on every render —
+   * a clock read in the render body is impure, and a value that drifts between
+   * renders would let a meeting silently change which tab it belongs to
+   * mid-interaction. It re-reads whenever the route refreshes, which is exactly
+   * when the data behind it changes anyway.
+   */
+  const [now] = useState(() => Date.now());
+  const isUpcoming = (m: Meeting) =>
+    Boolean(m.start_time) && new Date(m.start_time as string).getTime() > now;
+
+  const upcomingCount = meetings.filter(isUpcoming).length;
+
   const visible = meetings.filter((m) => {
+    if (when === "past" && isUpcoming(m)) return false;
+    if (when === "upcoming" && !isUpcoming(m)) return false;
     if (filter === "summarised") return m.ai_status === "complete";
     if (filter === "needs-transcript") return !m.transcript;
     return true;
@@ -69,9 +90,35 @@ export function MeetingsView({
     <>
       <PageHeader
         title="Meetings"
-        subtitle={`${meetings.length} total`}
+        subtitle={
+          when === "past" && upcomingCount > 0
+            ? `${visible.length} past · ${upcomingCount} upcoming`
+            : `${visible.length} of ${meetings.length}`
+        }
         actions={
           <>
+            {/* When it happened, and what state it's in, are different questions. */}
+            <div className="flex items-center gap-0.5 rounded-md bg-bg-subtle p-0.5">
+              {([
+                ["past", "Past"],
+                ["upcoming", "Upcoming"],
+                ["all", "All"],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  onClick={() => setWhen(value)}
+                  className={cn(
+                    "h-6 rounded px-2 text-[12px] font-medium transition-all duration-[50ms]",
+                    when === value
+                      ? "bg-bg text-fg-body shadow-[0_1px_2px_rgba(0,0,0,.06)]"
+                      : "text-fg-caption hover:text-fg-muted",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
             <div className="flex items-center gap-0.5 rounded-md bg-bg-subtle p-0.5">
               {([
                 ["all", "All"],
@@ -127,7 +174,28 @@ export function MeetingsView({
             }
           />
         ) : visible.length === 0 ? (
-          <EmptyState title="Nothing matches that filter" />
+          <EmptyState
+            icon={<CalendarDays className="size-4" />}
+            title={
+              when === "past"
+                ? "No past meetings yet"
+                : when === "upcoming"
+                  ? "Nothing on the calendar ahead"
+                  : "Nothing matches that filter"
+            }
+            description={
+              when === "past" && upcomingCount > 0
+                ? `You have ${upcomingCount} upcoming — they'll show up here once they've happened.`
+                : undefined
+            }
+            action={
+              when === "past" && upcomingCount > 0 ? (
+                <Button size="sm" onClick={() => setWhen("upcoming")}>
+                  See upcoming
+                </Button>
+              ) : undefined
+            }
+          />
         ) : (
           visible.map((meeting) => {
             const status = AI_STATUS[meeting.ai_status];
