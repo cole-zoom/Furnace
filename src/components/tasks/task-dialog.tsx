@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useCallback, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { CalendarDays, ChevronDown, Circle, SignalHigh, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/badge";
 import { createTask, deleteTask, updateTask } from "@/lib/actions";
 import { useAutosize } from "@/lib/use-autosize";
+import { useAutosave, type SaveState } from "@/lib/use-autosave";
 import { cn, dueLabel } from "@/lib/utils";
 import type { Task, TaskPriority, TaskStatus } from "@/lib/database.types";
 
@@ -55,6 +56,11 @@ function seed(task: Task | null | undefined, defaultStatus?: TaskStatus) {
       };
 }
 
+type Draft = ReturnType<typeof seed>;
+
+/** Two seconds of not typing. Long enough that a sentence is one write. */
+const AUTOSAVE_DELAY = 2000;
+
 /**
  * A task, as a page rather than a form.
  *
@@ -65,14 +71,24 @@ function seed(task: Task | null | undefined, defaultStatus?: TaskStatus) {
  * rest of the page. Nothing about the data changed; the same five columns are
  * read and written by the same two Server Actions.
  *
- * Saving stays explicit. Notion autosaves because its editor owns the document;
- * here every keystroke would be a Server Action round trip against a row the
- * board is also rendering, so Cancel remains a real escape hatch.
+ * An existing task saves itself; a new one doesn't. A task being edited is a
+ * row that already exists, so a write-behind just keeps it current — the way
+ * Notion does, because there is nothing to "cancel" back to that the board
+ * isn't already showing. A *new* task has no row at all, and autosaving one
+ * would leave a trail of half-typed records behind every time the dialog was
+ * opened and abandoned. So creation stays an explicit, single write.
  */
 export function TaskDialog({ open, onClose, task, defaultStatus }: TaskDialogProps) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [form, setForm] = useState(() => seed(task, defaultStatus));
+
+  /*
+   * Mirrors `form`, so a setter can hand the *next* draft to autosave in the
+   * same tick rather than waiting a render for state to settle — which is what
+   * makes "change the status, then immediately close" write the new status.
+   */
+  const formRef = useRef(form);
 
   const titleRef = useAutosize<HTMLTextAreaElement>(form.title);
   const descriptionRef = useAutosize<HTMLTextAreaElement>(form.description);
@@ -82,10 +98,64 @@ export function TaskDialog({ open, onClose, task, defaultStatus }: TaskDialogPro
   // the caret away from wherever the user just clicked.
   const caretPlaced = useRef(false);
 
-  const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
-    setForm((prev) => ({ ...prev, [key]: value }));
+  // Whether this visit wrote anything. Opening a task to read it and closing
+  // again should cost nothing — no save, and no board refetch on the way out.
+  const touched = useRef(false);
 
-  const submit = () => {
+  const { state: saveState, schedule, flush, cancel } = useAutosave<Draft>({
+    enabled: Boolean(task),
+    delay: AUTOSAVE_DELAY,
+    // What's already in the database, so the very first diff runs against the
+    // truth rather than against an empty draft. Only read once, on mount.
+    initial: seed(task, defaultStatus),
+    validate: (draft) => (draft.title.trim() ? null : "Needs a title"),
+    save: async (draft, previous) => {
+      if (!task) return { ok: true };
+
+      // Only the columns that actually moved. An unchanged draft sends nothing
+      // at all, so a stray keystroke that gets undone costs zero requests.
+      const patch: Record<string, unknown> = {};
+      if (draft.title !== previous.title) patch.title = draft.title.trim();
+      if (draft.description !== previous.description) {
+        patch.description = draft.description.trim() || null;
+      }
+      if (draft.status !== previous.status) patch.status = draft.status;
+      if (draft.priority !== previous.priority) patch.priority = draft.priority;
+      if (draft.due_date !== previous.due_date) patch.due_date = draft.due_date || null;
+
+      if (Object.keys(patch).length === 0) return { ok: true };
+      return updateTask(task.id, patch);
+    },
+  });
+
+  /**
+   * `immediate` for a decision, debounced for typing. Picking a status or a
+   * date is one deliberate act and should land at once; prose isn't finished
+   * until the typing stops.
+   */
+  const set = (patch: Partial<Draft>, immediate = false) => {
+    const next = { ...formRef.current, ...patch };
+    formRef.current = next;
+    setForm(next);
+    if (task) touched.current = true;
+    schedule(next, immediate);
+  };
+
+  /*
+   * Memoised deliberately. Dialog no longer re-runs its effects when a handler
+   * changes identity, but this one is also read by an effect there, and a
+   * close handler that churns every keystroke is a hazard worth not creating.
+   *
+   * Flush before the refetch, not after: router.refresh() re-reads the row, so
+   * a write still sitting on the debounce timer would be painted over in the
+   * UI by the older value it hasn't replaced yet.
+   */
+  const close = useCallback(() => {
+    if (task && touched.current) void flush().finally(() => router.refresh());
+    onClose();
+  }, [task, flush, onClose, router]);
+
+  const create = () => {
     if (!form.title.trim()) {
       toast.error("Give the task a title");
       titleRef.current?.focus();
@@ -93,24 +163,20 @@ export function TaskDialog({ open, onClose, task, defaultStatus }: TaskDialogPro
     }
 
     startTransition(async () => {
-      const payload = {
+      const result = await createTask({
         title: form.title.trim(),
         description: form.description.trim() || null,
         status: form.status,
         priority: form.priority,
         due_date: form.due_date || null,
-      };
-
-      const result = task
-        ? await updateTask(task.id, payload)
-        : await createTask(payload);
+      });
 
       if (!result.ok) {
         toast.error(result.error);
         return;
       }
 
-      toast.success(task ? "Task updated" : "Task created");
+      toast.success("Task created");
       onClose();
       router.refresh();
     });
@@ -118,6 +184,9 @@ export function TaskDialog({ open, onClose, task, defaultStatus }: TaskDialogPro
 
   const remove = () => {
     if (!task) return;
+    // Otherwise a debounced write lands two seconds later against a row that
+    // no longer exists.
+    cancel();
     startTransition(async () => {
       const result = await deleteTask(task.id);
       if (!result.ok) {
@@ -135,7 +204,7 @@ export function TaskDialog({ open, onClose, task, defaultStatus }: TaskDialogPro
   return (
     <Dialog
       open={open}
-      onClose={onClose}
+      onClose={close}
       ariaLabel={task ? "Edit task" : "New task"}
       /*
        * A page, so: wider, and a fixed height with the scrolling on the inside.
@@ -146,38 +215,56 @@ export function TaskDialog({ open, onClose, task, defaultStatus }: TaskDialogPro
       className="mt-[5vh] flex h-[min(82vh,880px)] max-w-3xl flex-col"
       bodyClassName="flex min-h-0 flex-1 flex-col p-0"
       footer={
-        <>
-          {task && (
+        task ? (
+          /*
+           * No Cancel on an existing task: the edits are already in the
+           * database by the time you get here, so an escape hatch labelled
+           * Cancel would be lying about what it does.
+           */
+          <>
             <Button variant="danger" size="sm" onClick={remove} disabled={pending} className="mr-auto">
               <Trash2 className="size-3.5" />
               Delete
             </Button>
-          )}
-          <Button variant="ghost" size="sm" onClick={onClose} disabled={pending}>
-            Cancel
-          </Button>
-          <Button variant="primary" size="sm" onClick={submit} loading={pending}>
-            {task ? "Save" : "Create task"}
-          </Button>
-        </>
+            <Button variant="primary" size="sm" onClick={close} disabled={pending}>
+              Done
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button variant="ghost" size="sm" onClick={onClose} disabled={pending}>
+              Cancel
+            </Button>
+            <Button variant="primary" size="sm" onClick={create} loading={pending}>
+              Create task
+            </Button>
+          </>
+        )
       }
     >
       <div
         className="flex min-h-0 flex-1 flex-col"
         onKeyDown={(e) => {
-          // ⌘↵ submits from anywhere on the page. Handled once, here, so the
-          // fields below can own plain Enter without double-firing the action.
+          // ⌘↵ from anywhere on the page: create it, or — since an edit is
+          // already saved — simply leave. Handled once, here, so the fields
+          // below can own plain Enter without double-firing.
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
-            submit();
+            if (task) close();
+            else create();
           }
         }}
       >
         {/* Breadcrumb-ish chrome, in place of a title bar the page doesn't want. */}
         <div className="flex shrink-0 items-center justify-between gap-4 px-3 py-2">
-          <span className="text-[12px] text-fg-caption">{task ? "Task" : "New task"}</span>
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="shrink-0 text-[12px] text-fg-caption">
+              {task ? "Task" : "New task"}
+            </span>
+            {task && <SaveStatus state={saveState} onRetry={() => void flush()} />}
+          </div>
           <button
-            onClick={onClose}
+            onClick={close}
             aria-label="Close"
             className="grid size-7 shrink-0 place-items-center rounded-md text-fg-caption
                        transition-colors duration-[50ms] hover:bg-bg-subtle hover:text-fg-body"
@@ -194,7 +281,7 @@ export function TaskDialog({ open, onClose, task, defaultStatus }: TaskDialogPro
               rows={1}
               maxLength={TITLE_MAX}
               value={form.title}
-              onChange={(e) => set("title", e.target.value)}
+              onChange={(e) => set({ title: e.target.value })}
               onFocus={(e) => {
                 if (caretPlaced.current) return;
                 caretPlaced.current = true;
@@ -219,13 +306,13 @@ export function TaskDialog({ open, onClose, task, defaultStatus }: TaskDialogPro
 
             <div className="mt-4 space-y-0.5">
               <Property icon={<Circle className="size-3.5" />} label="Status">
-                <Overlaid label="Status" value={form.status} onChange={(v) => set("status", v)} options={STATUS_ORDER} optionLabel={(s) => STATUS_META[s].label}>
+                <Overlaid label="Status" value={form.status} onChange={(v) => set({ status: v }, true)} options={STATUS_ORDER} optionLabel={(s) => STATUS_META[s].label}>
                   <StatusChip status={form.status} />
                 </Overlaid>
               </Property>
 
               <Property icon={<SignalHigh className="size-3.5" />} label="Priority">
-                <Overlaid label="Priority" value={form.priority} onChange={(v) => set("priority", v)} options={PRIORITY_ORDER} optionLabel={(p) => PRIORITY_META[p].label}>
+                <Overlaid label="Priority" value={form.priority} onChange={(v) => set({ priority: v }, true)} options={PRIORITY_ORDER} optionLabel={(p) => PRIORITY_META[p].label}>
                   <PriorityBars priority={form.priority} />
                   <span className={cn("text-[13px]", PRIORITY_META[form.priority].chip)}>
                     {PRIORITY_META[form.priority].label}
@@ -239,7 +326,7 @@ export function TaskDialog({ open, onClose, task, defaultStatus }: TaskDialogPro
                     type="date"
                     aria-label="Due date"
                     value={form.due_date}
-                    onChange={(e) => set("due_date", e.target.value)}
+                    onChange={(e) => set({ due_date: e.target.value }, true)}
                     className="rounded-md bg-transparent px-1.5 py-1 text-[13px] text-fg-body
                                outline-none transition-colors duration-[50ms]
                                hover:bg-bg-subtle focus:surface-accent"
@@ -255,7 +342,7 @@ export function TaskDialog({ open, onClose, task, defaultStatus }: TaskDialogPro
                       <span className={cn("text-[12px]", DUE_TONE[due.tone])}>{due.label}</span>
                       <button
                         type="button"
-                        onClick={() => set("due_date", "")}
+                        onClick={() => set({ due_date: "" }, true)}
                         aria-label="Clear due date"
                         className="grid size-5 place-items-center rounded text-fg-caption
                                    transition-colors duration-[50ms] hover:bg-bg-subtle hover:text-fg-body"
@@ -294,7 +381,7 @@ export function TaskDialog({ open, onClose, task, defaultStatus }: TaskDialogPro
                 rows={1}
                 maxLength={DESCRIPTION_MAX}
                 value={form.description}
-                onChange={(e) => set("description", e.target.value)}
+                onChange={(e) => set({ description: e.target.value })}
                 placeholder="Add detail, links — whatever helps future you."
                 aria-label="Description"
                 className="w-full min-h-[240px] resize-none overflow-hidden bg-transparent
@@ -316,6 +403,36 @@ const DUE_TONE: Record<ReturnType<typeof dueLabel>["tone"], string> = {
   later: "text-fg-caption",
   none: "text-fg-caption",
 };
+
+/**
+ * The write-behind, made visible.
+ *
+ * An autosave you can't see is one you can't trust, and an autosave that fails
+ * silently is data loss with extra steps — so the failure state is a button
+ * that retries, not a message that sits there. The live region is always
+ * mounted so a screen reader hears the transitions instead of only the element
+ * appearing.
+ */
+function SaveStatus({ state, onRetry }: { state: SaveState; onRetry: () => void }) {
+  return (
+    <span aria-live="polite" className="min-w-0 truncate text-[12px]">
+      {state.kind === "saving" && <span className="text-fg-caption">Saving…</span>}
+      {state.kind === "saved" && <span className="text-fg-caption">Saved</span>}
+      {state.kind === "blocked" && (
+        <span className="text-[var(--warning)]">{state.reason}</span>
+      )}
+      {state.kind === "error" && (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="text-danger underline-offset-2 hover:underline"
+        >
+          Couldn&apos;t save — retry
+        </button>
+      )}
+    </span>
+  );
+}
 
 /** One Notion-style property line: a quiet label, then the control. */
 function Property({

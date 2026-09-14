@@ -35,13 +35,29 @@ export function Dialog({
 }: DialogProps) {
   const panelRef = useRef<HTMLDivElement>(null);
 
+  /*
+   * Held in a ref, so the effect below depends only on `open`.
+   *
+   * It used to list `onClose` too, which quietly made this component hostile
+   * to any caller whose handler wasn't memoised: a new identity on every
+   * render re-ran the whole effect, and its setup re-applies autofocus while
+   * its cleanup restores the previously focused element. Typing into a field
+   * caused a render, the render stole focus back to the top of the dialog, and
+   * the rest of the sentence went somewhere else entirely — including, once,
+   * into a <select>. The fix belongs here rather than in each caller.
+   */
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
+
   useEffect(() => {
     if (!open) return;
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
-        onClose();
+        onCloseRef.current();
         return;
       }
 
@@ -92,7 +108,7 @@ export function Dialog({
       cancelAnimationFrame(raf);
       previouslyFocused?.focus?.();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open || typeof document === "undefined") return null;
 
