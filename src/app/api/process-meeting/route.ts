@@ -27,9 +27,14 @@ export const maxDuration = 60;
 
 const bodySchema = z.object({
   meetingId: z.uuid().optional(),
-  // Below ~20 characters there is nothing to extract; above 500k the caller is
-  // pasting a book, and gemini.ts would elide most of it anyway.
-  transcript: z.string().min(20).max(500_000),
+  /*
+   * Optional when `meetingId` is given: a retry shouldn't have to re-upload
+   * half a megabyte the row already holds, and a stored transcript below the
+   * 20-character floor would otherwise make Retry fail validation on data the
+   * user can no longer edit. Below ~20 characters there's nothing to extract;
+   * above 500k the caller is pasting a book, and gemini.ts elides most of it.
+   */
+  transcript: z.string().min(20).max(500_000).optional(),
   // 500 is the `meetings.title` check constraint — reject here rather than
   // letting Postgres raise mid-flow.
   title: z.string().trim().min(1).max(500).optional(),
@@ -108,6 +113,23 @@ export async function POST(request: NextRequest) {
 
   const { meetingId, transcript, title, createIfMissing } = parsed.data;
 
+  if (!meetingId && !transcript) {
+    return NextResponse.json(
+      { error: "Provide a transcript, or a meetingId that already has one." },
+      { status: 400 },
+    );
+  }
+
+  // Checked before any write: a transcript that's long enough raw but empty
+  // once trimmed would otherwise insert a meeting and then 400, leaving an
+  // orphan row stuck at "failed".
+  if (transcript && transcript.trim().length < 20) {
+    return NextResponse.json(
+      { error: "That transcript is too short to summarise." },
+      { status: 400 },
+    );
+  }
+
   if (!meetingId && !createIfMissing) {
     return NextResponse.json(
       { error: "Provide a meetingId, or set createIfMissing to create one." },
@@ -119,15 +141,50 @@ export async function POST(request: NextRequest) {
   let meeting: Meeting;
 
   if (meetingId) {
+    /*
+     * Read first, then write. Marking the row "processing" before knowing there
+     * is anything to process meant a retry against an unusable stored
+     * transcript flipped a previously-complete meeting to failed and left it
+     * there, with no UI path to replace the transcript.
+     *
+     * The read is scoped by user_id and returns nothing for a meeting that
+     * isn't yours, so the 404 below still can't confirm someone else's row.
+     */
+    const { data: existing, error: readError } = await supabase
+      .from("meetings")
+      // Only what the validation below needs. select("*") pulled the whole
+      // transcript back out of Postgres on every call, including the upload
+      // path where the body already carries it.
+      .select("id, transcript")
+      .eq("id", meetingId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (readError) {
+      console.error("[process-meeting] meeting read failed:", readError.message);
+      return NextResponse.json({ error: "Could not load the meeting." }, { status: 500 });
+    }
+    if (!existing) return NextResponse.json({ error: "Meeting not found." }, { status: 404 });
+
+    const stored = transcript ?? existing.transcript;
+    if (!stored || stored.trim().length < 20) {
+      return NextResponse.json(
+        {
+          error: "That meeting has no transcript to summarise yet.",
+          meetingId: existing.id,
+        },
+        { status: 400 },
+      );
+    }
+
     const patch: MeetingWrite = {
-      transcript,
+      // Only when one was supplied — a retry must not blank the stored copy.
+      ...(transcript ? { transcript } : {}),
       ai_status: "processing",
       ai_error: null,
       ...(title ? { title } : {}),
     };
 
-    // The update doubles as the existence check: zero rows means the meeting is
-    // missing *or* someone else's, and the caller learns nothing about which.
     const { data, error } = await supabase
       .from("meetings")
       .update(patch)
@@ -144,6 +201,15 @@ export async function POST(request: NextRequest) {
 
     meeting = data;
   } else {
+    // Guaranteed by the guard above; restated so the type narrows here rather
+    // than leaning on a non-null assertion.
+    if (!transcript) {
+      return NextResponse.json(
+        { error: "Provide a transcript to create a meeting from." },
+        { status: 400 },
+      );
+    }
+
     const draft: MeetingInsert = {
       user_id: user.id,
       title: title ?? deriveTitle(transcript),
@@ -165,10 +231,13 @@ export async function POST(request: NextRequest) {
     meeting = data;
   }
 
+  // Validated on both paths above; the persisted row carries whichever it is.
+  const source = transcript ?? meeting.transcript ?? "";
+
   let insights;
   try {
     insights = await extractMeetingInsights({
-      transcript,
+      transcript: source,
       title: meeting.title,
       meetingDate: meeting.start_time ?? meeting.created_at,
     });
@@ -195,47 +264,114 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Re-processing replaces the model's previous read of the meeting. Actions the
-  // user already promoted to a task are theirs now, so those stay.
-  const { error: clearError } = await supabase
+  /*
+   * Reconcile, rather than replace.
+   *
+   * Re-running gives a fresh read of the transcript, but the reader's decisions
+   * about the previous read have to survive it: a promoted item is a task now,
+   * and a dismissed one is a judgement that it wasn't worth doing.
+   *
+   * Preserving those rows isn't enough on its own — the model re-extracts the
+   * same items from the same transcript, so inserting the new list blindly hands
+   * every dismissed item straight back as open and leaves a duplicate behind in
+   * "Handled", one more on every run. Items already decided on are matched by
+   * description and skipped.
+   *
+   * Unless the transcript itself changed. A dismissal says "this item, from that
+   * reading, wasn't worth doing" — and Replace transcript exists precisely
+   * because that reading was wrong. Carrying those dismissals forward would let
+   * a garbled first pass permanently suppress items the corrected transcript
+   * genuinely contains, with nothing in the UI to show it happened. A new
+   * transcript therefore clears dismissals and starts the read fresh; promoted
+   * items are real tasks and survive regardless.
+   */
+  const sourceChanged = Boolean(transcript);
+  const { data: existingActions, error: existingError } = await supabase
     .from("actions")
-    .delete()
+    .select("id, description, task_id, dismissed")
     .eq("meeting_id", meeting.id)
-    .eq("user_id", user.id)
-    .is("task_id", null);
+    .eq("user_id", user.id);
 
-  if (clearError) {
-    const message = sanitizeError(clearError);
+  if (existingError) {
+    const message = sanitizeError(existingError);
     await markFailed(supabase, meeting.id, user.id, message);
-    console.error("[process-meeting] could not clear stale actions:", clearError.message);
+    console.error("[process-meeting] could not read existing actions:", existingError.message);
     return NextResponse.json({ error: "Could not save the results.", detail: message }, { status: 500 });
   }
 
-  let actions: Action[] = [];
-  if (insights.action_items.length > 0) {
-    // 2000 is the `actions.description` check constraint.
-    const rows: ActionWrite[] = insights.action_items.map((item) => ({
+  /** Same wording, modulo case and spacing, is the same action item. */
+  const key = (description: string) => description.trim().toLowerCase().replace(/\s+/g, " ");
+
+  const decided = new Set(
+    (existingActions ?? [])
+      .filter((a) => a.task_id !== null || (a.dismissed && !sourceChanged))
+      .map((a) => key(a.description)),
+  );
+
+  // Rows to clear: always the undecided ones, plus dismissals when the source
+  // they were judged against no longer exists.
+  const staleIds = (existingActions ?? [])
+    .filter((a) => a.task_id === null && (!a.dismissed || sourceChanged))
+    .map((a) => a.id);
+
+  if (staleIds.length > 0) {
+    const { error: clearError } = await supabase
+      .from("actions")
+      .delete()
+      .eq("user_id", user.id)
+      .in("id", staleIds);
+
+    if (clearError) {
+      const message = sanitizeError(clearError);
+      await markFailed(supabase, meeting.id, user.id, message);
+      console.error("[process-meeting] could not clear stale actions:", clearError.message);
+      return NextResponse.json({ error: "Could not save the results.", detail: message }, { status: 500 });
+    }
+  }
+
+  // 2000 is the `actions.description` check constraint.
+  const rows: ActionWrite[] = insights.action_items
+    .map((item) => ({
       user_id: user.id,
       meeting_id: meeting.id,
       description: item.task.slice(0, 2000),
       owner: item.person,
       due_date: item.due_date,
-    }));
+    }))
+    .filter((row) => !decided.has(key(row.description)));
 
-    const { data, error } = await supabase
-      .from("actions")
-      .insert(rows)
-      .select();
+  if (rows.length > 0) {
+    const { error } = await supabase.from("actions").insert(rows);
 
-    if (error || !data) {
+    if (error) {
       const message = sanitizeError(error);
       await markFailed(supabase, meeting.id, user.id, message);
-      console.error("[process-meeting] action insert failed:", error?.message);
+      console.error("[process-meeting] action insert failed:", error.message);
       return NextResponse.json({ error: "Could not save the results.", detail: message }, { status: 500 });
     }
-
-    actions = data;
   }
+
+  /*
+   * Read the meeting's actions back rather than returning just the inserted
+   * ones. The callers count this array for their toast, and re-summarising a
+   * meeting whose items were all already promoted inserts nothing — which
+   * reported a bare "Summarised" for a meeting holding five action items.
+   */
+  const { data: finalActions, error: finalActionsError } = await supabase
+    .from("actions")
+    .select("*")
+    .eq("meeting_id", meeting.id)
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: true });
+
+  if (finalActionsError) {
+    const message = sanitizeError(finalActionsError);
+    await markFailed(supabase, meeting.id, user.id, message);
+    console.error("[process-meeting] could not read back actions:", finalActionsError.message);
+    return NextResponse.json({ error: "Could not save the results.", detail: message }, { status: 500 });
+  }
+
+  const actions: Action[] = finalActions ?? [];
 
   const result: MeetingWrite = {
     summary: insights.summary,

@@ -4,6 +4,7 @@ import { requireUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { PeopleView } from "@/components/people-view";
 import { ListSkeleton } from "@/components/ui/list-skeleton";
+import { requestTime } from "@/lib/clock";
 
 export const metadata: Metadata = { title: "People" };
 
@@ -19,7 +20,7 @@ export default async function PeoplePage() {
 
   return (
     <Suspense fallback={<ListSkeleton />}>
-      <PeopleView people={people ?? []} />
+      <PeopleView people={people ?? []} now={requestTime()} />
     </Suspense>
   );
 }

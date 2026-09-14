@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Sparkles } from "lucide-react";
 import { toast } from "sonner";
+import { readJson } from "@/lib/fetch-json";
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Textarea } from "@/components/ui/field";
@@ -51,11 +52,13 @@ export function TranscriptDialog({
           }),
         });
 
-        const body = await res.json();
-        if (!res.ok) {
-          throw new Error(body.message ?? body.error ?? "Could not process that transcript.");
-        }
+        const { ok, data, error } = await readJson<{
+          actions?: unknown[];
+          meeting?: { id?: string };
+        }>(res);
+        if (!ok) throw new Error(error ?? "Could not process that transcript.");
 
+        const body = data ?? {};
         const count = body.actions?.length ?? 0;
         toast.success(
           count > 0
@@ -65,7 +68,17 @@ export function TranscriptDialog({
         );
 
         onClose();
-        if (body.meeting?.id) router.push(`/meetings/${body.meeting.id}`);
+        /*
+         * Only navigate when this actually produced a different meeting. Opened
+         * from a meeting's own page ("Replace transcript"), the id comes back
+         * unchanged and pushing it would reload the same route minus its query
+         * — dropping the ?when=/?filter= that tell the back arrow which list
+         * to return to, and adding a redundant history entry for the page
+         * you're already on.
+         */
+        if (body.meeting?.id && body.meeting.id !== meetingId) {
+          router.push(`/meetings/${body.meeting.id}`);
+        }
         router.refresh();
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Something went wrong", {

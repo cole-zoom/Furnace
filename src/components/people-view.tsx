@@ -13,7 +13,14 @@ import { updatePerson } from "@/lib/actions";
 import { relativeTime } from "@/lib/utils";
 import type { Person } from "@/lib/database.types";
 
-export function PeopleView({ people }: { people: Person[] }) {
+export function PeopleView({
+  people,
+  now,
+}: {
+  people: Person[];
+  /** Server-resolved, so relative labels don't shift between SSR and hydration. */
+  now: number;
+}) {
   const searchParams = useSearchParams();
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Person | null>(
@@ -89,7 +96,7 @@ export function PeopleView({ people }: { people: Person[] }) {
                   {[person.company, person.role].filter(Boolean).join(" · ") || "—"}
                 </span>
                 <span className="w-[120px] shrink-0 text-right text-[12px] text-fg-caption">
-                  {person.last_met_at ? relativeTime(person.last_met_at) : "—"}
+                  {person.last_met_at ? relativeTime(person.last_met_at, now) : "—"}
                 </span>
               </button>
             ))}

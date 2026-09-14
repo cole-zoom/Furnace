@@ -11,12 +11,21 @@ import { TaskBoard } from "@/components/tasks/task-board";
 import { TaskTable } from "@/components/tasks/task-table";
 import { Coal, FuelGauge } from "@/components/coal";
 import { taskViewStore, type TaskViewMode } from "@/lib/view-store";
+import { useHydrated } from "@/lib/use-hydrated";
+import { useTickingClock } from "@/lib/use-ticking-clock";
 import { cn } from "@/lib/utils";
 import type { Task, TaskPriority, TaskStatus } from "@/lib/database.types";
 
 type ViewMode = TaskViewMode;
 
-export function TasksView({ tasks }: { tasks: Task[] }) {
+export function TasksView({
+  tasks,
+  now,
+}: {
+  tasks: Task[];
+  /** Server-resolved, so relative labels don't shift between SSR and hydration. */
+  now: number;
+}) {
   const { newTask, editTask } = useShell();
   const searchParams = useSearchParams();
 
@@ -66,15 +75,35 @@ export function TasksView({ tasks }: { tasks: Task[] }) {
 
   const openCount = tasks.filter((t) => t.status !== "done").length;
 
-  // Fuel burned today. completed_at is maintained by a database trigger, so
-  // this stays honest even when a task is closed from the table checkbox.
+  /*
+   * Fuel burned today. completed_at is maintained by a database trigger, so
+   * this stays honest even when a task is closed from the table checkbox.
+   *
+   * Computed only after hydration: "today" means the *reader's* day, and
+   * setHours resolves in whatever zone the code runs in — UTC on the server.
+   * A task finished at 9pm PDT falls on the next UTC day, so the server would
+   * count it and the browser wouldn't, and the gauge would change value under
+   * the reader as React took over. Rendering 0 on both the server and the
+   * hydration pass keeps them identical, then the real figure lands.
+   */
+  const hydrated = useHydrated();
+
+  /*
+   * Ticks, rather than pinning the server render instant. A tab left open
+   * across local midnight would otherwise keep yesterday's boundary and go on
+   * counting yesterday's finished tasks as today's fuel — and the same stale
+   * instant would keep a task that became overdue at midnight labelled "Today".
+   */
+  const clock = useTickingClock(now);
+
   const burnedToday = useMemo(() => {
-    const startOfToday = new Date();
+    if (!hydrated) return 0;
+    const startOfToday = new Date(clock);
     startOfToday.setHours(0, 0, 0, 0);
     return tasks.filter(
       (t) => t.completed_at && new Date(t.completed_at) >= startOfToday,
     ).length;
-  }, [tasks]);
+  }, [hydrated, tasks, clock]);
 
   return (
     <>
@@ -205,9 +234,9 @@ export function TasksView({ tasks }: { tasks: Task[] }) {
             }
           />
         ) : view === "board" ? (
-          <TaskBoard tasks={filtered} />
+          <TaskBoard tasks={filtered} now={hydrated ? clock : null} />
         ) : (
-          <TaskTable tasks={filtered} />
+          <TaskTable tasks={filtered} now={clock} hydrated={hydrated} />
         )}
       </div>
     </>

@@ -4,6 +4,7 @@ import { useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, Check, LogOut, RefreshCw, X } from "lucide-react";
 import { toast } from "sonner";
+import { readJson } from "@/lib/fetch-json";
 import { PageHeader } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/badge";
@@ -25,7 +26,14 @@ export interface SettingsData {
   counts: { tasks: number; meetings: number; people: number };
 }
 
-export function SettingsView({ data }: { data: SettingsData }) {
+export function SettingsView({
+  data,
+  now,
+}: {
+  data: SettingsData;
+  /** Server-resolved, so relative labels don't shift between SSR and hydration. */
+  now: number;
+}) {
   const router = useRouter();
   const [syncing, startSync] = useTransition();
 
@@ -34,10 +42,12 @@ export function SettingsView({ data }: { data: SettingsData }) {
       const pending = toast.loading("Syncing Google Calendar…");
       try {
         const res = await fetch("/api/calendar/sync", { method: "POST" });
-        const body = await res.json();
-        if (!res.ok) throw new Error(body.message ?? body.error ?? "Sync failed");
+        const { ok, data, error } = await readJson<{
+          created: number; updated: number; people: number;
+        }>(res);
+        if (!ok) throw new Error(error ?? "Sync failed");
         toast.success(
-          `${body.created} new · ${body.updated} updated · ${body.people} people`,
+          `${data?.created ?? 0} new · ${data?.updated ?? 0} updated · ${data?.people ?? 0} people`,
           { id: pending },
         );
         router.refresh();
@@ -105,7 +115,7 @@ export function SettingsView({ data }: { data: SettingsData }) {
                   </div>
                   <p className="mt-0.5 text-[12px] text-fg-caption">
                     {data.google.lastSyncedAt
-                      ? `Last synced ${relativeTime(data.google.lastSyncedAt)}`
+                      ? `Last synced ${relativeTime(data.google.lastSyncedAt, now)}`
                       : "Never synced"}
                   </p>
                 </div>

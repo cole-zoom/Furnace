@@ -135,7 +135,7 @@ export function PageHeader({
   actions,
 }: {
   title: string;
-  subtitle?: string;
+  subtitle?: React.ReactNode;
   /** Sits with the title, not the controls — for stats rather than buttons. */
   meta?: React.ReactNode;
   actions?: React.ReactNode;
@@ -147,7 +147,9 @@ export function PageHeader({
           {title}
         </h1>
         {subtitle && (
-          <span className="shrink-0 text-[12px] text-fg-caption">{subtitle}</span>
+          <span className="flex shrink-0 items-center gap-1 text-[12px] text-fg-caption">
+            {subtitle}
+          </span>
         )}
         {meta && (
           <>

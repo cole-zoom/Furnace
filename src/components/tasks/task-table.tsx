@@ -44,7 +44,17 @@ const COLUMNS: Array<{ key: SortKey; label: string }> = [
  */
 const GRID = "grid grid-cols-[16px_minmax(0,1fr)_124px_100px_92px_104px] items-center gap-3 px-4";
 
-export function TaskTable({ tasks }: { tasks: Task[] }) {
+export function TaskTable({
+  tasks,
+  now,
+  hydrated,
+}: {
+  tasks: Task[];
+  /** Server-resolved instant; stable across SSR and hydration. */
+  now: number;
+  /** Whether the reader's calendar day is knowable yet. */
+  hydrated: boolean;
+}) {
   const { editTask } = useShell();
   const router = useRouter();
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({
@@ -117,7 +127,7 @@ export function TaskTable({ tasks }: { tasks: Task[] }) {
 
       <div className="flex-1 overflow-y-auto">
         {sorted.map((task) => {
-          const due = dueLabel(task.due_date);
+          const due = dueLabel(task.due_date, hydrated ? now : null);
           const done = task.status === "done";
 
           return (
@@ -173,7 +183,7 @@ export function TaskTable({ tasks }: { tasks: Task[] }) {
               </div>
 
               <div className="min-w-0 truncate text-[12px] text-fg-caption">
-                {relativeTime(task.created_at)}
+                {relativeTime(task.created_at, now)}
               </div>
             </div>
           );

@@ -15,6 +15,7 @@ import {
   Users,
 } from "lucide-react";
 import { toast } from "sonner";
+import { readJson } from "@/lib/fetch-json";
 import { createClient } from "@/lib/supabase/client";
 import { Kbd } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -102,10 +103,11 @@ export function CommandPalette({
           const pending = toast.loading("Syncing calendar…");
           try {
             const res = await fetch("/api/calendar/sync", { method: "POST" });
-            const body = await res.json();
-            if (!res.ok) throw new Error(body.message ?? body.error ?? "Sync failed");
+            const { ok, data, error } = await readJson<{ synced: number }>(res);
+            if (!ok) throw new Error(error ?? "Sync failed");
+            const synced = data?.synced ?? 0;
             toast.success(
-              `Synced ${body.synced} event${body.synced === 1 ? "" : "s"}`,
+              `Synced ${synced} event${synced === 1 ? "" : "s"}`,
               { id: pending },
             );
             router.refresh();
