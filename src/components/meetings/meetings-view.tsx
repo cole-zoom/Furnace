@@ -85,7 +85,13 @@ export function MeetingsView({
    * correct for a reload or a back-arrow.
    */
   const applyParams = (changes: Record<string, string | null>) => {
-    const params = new URLSearchParams(searchParams.toString());
+    /*
+     * Read from window.location, not useSearchParams. replaceState mutates the
+     * URL synchronously while the hook's value only updates once Next's
+     * transition commits — so two quick clicks would both build from the
+     * pre-first-click state and the second would silently undo the first.
+     */
+    const params = new URLSearchParams(window.location.search);
     for (const [key, value] of Object.entries(changes)) {
       if (value === null) params.delete(key);
       else params.set(key, value);

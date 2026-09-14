@@ -3,61 +3,46 @@
 import { useEffect, useState } from "react";
 
 /**
- * A clock anchored to the server and advanced by elapsed time.
+ * The server's instant until hydration, the browser's afterwards.
  *
- * Deliberately never reads the browser's wall clock. Earlier versions did, and
- * the two failure modes pull in opposite directions:
+ * This started far more elaborate — anchoring to the server and advancing with
+ * performance.now() to avoid ever trusting the local wall clock. That was the
+ * wrong instinct twice over: performance.now() doesn't advance while a machine
+ * sleeps, so a laptop closed at 5pm and opened at 9am reported yesterday
+ * evening; and an anchor from Next's Router Cache can arrive twenty minutes
+ * stale with no path to correct it, because elapsed-time-since-mount is zero.
  *
- *   - take the newer of server and browser, and one fast reading from a laptop
- *     waking out of suspend latches permanently — every correct server value
- *     afterwards loses the comparison and is discarded;
- *   - take the server outright, and a browser running slightly ahead gets pulled
- *     back on the next refresh, flipping a meeting that just started back to
- *     "upcoming" until the next tick.
- *
- * Anchoring to the server and measuring elapsed time with performance.now()
- * avoids the trade entirely: the origin is always the server's answer, the
- * offset is monotonic and independent of any clock the user can set wrong, and
- * a fresh server value simply re-anchors.
+ * The simple rule is also the right one. The server value exists only so the
+ * markup and the hydration render agree; past that, "now" means the reader's
+ * clock — which is what every other app on their machine shows, advances
+ * through suspend, and re-corrects itself when NTP does.
  */
 export function useTickingClock(serverNow: number, intervalMs = 60_000): number {
   const [clock, setClock] = useState(serverNow);
 
-  /*
-   * Re-anchor during render when a newer server value arrives — after a
-   * router.refresh(), say — so the first paint already uses it rather than
-   * showing the old instant for a frame.
-   */
-  const [anchor, setAnchor] = useState(serverNow);
-  if (anchor !== serverNow) {
-    setAnchor(serverNow);
-    setClock(serverNow);
-  }
-
   useEffect(() => {
-    // Captured on the client, after hydration, so SSR is never involved.
-    const origin = performance.now();
-    const tick = () => setClock(anchor + (performance.now() - origin));
+    const tick = () => setClock(Date.now());
 
-    /*
-     * Immediately, not just on the interval. Next serves back/forward
-     * navigations from the Router Cache, so a remount can arrive carrying a
-     * `serverNow` from twenty minutes ago, and the render-phase re-anchor
-     * can't help — the prop didn't change.
-     */
+    // Immediately: this is the first moment the reader's own clock is legible,
+    // and it's what corrects a stale server value served from the Router Cache.
     tick();
 
     const id = setInterval(tick, intervalMs);
     const onVisible = () => {
       if (document.visibilityState === "visible") tick();
     };
+
     document.addEventListener("visibilitychange", onVisible);
+    // Fires on bfcache restore, where neither an interval nor visibilitychange
+    // is guaranteed to have run.
+    window.addEventListener("pageshow", tick);
 
     return () => {
       clearInterval(id);
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("pageshow", tick);
     };
-  }, [anchor, intervalMs]);
+  }, [intervalMs]);
 
   return clock;
 }

@@ -276,7 +276,16 @@ export async function POST(request: NextRequest) {
    * every dismissed item straight back as open and leaves a duplicate behind in
    * "Handled", one more on every run. Items already decided on are matched by
    * description and skipped.
+   *
+   * Unless the transcript itself changed. A dismissal says "this item, from that
+   * reading, wasn't worth doing" — and Replace transcript exists precisely
+   * because that reading was wrong. Carrying those dismissals forward would let
+   * a garbled first pass permanently suppress items the corrected transcript
+   * genuinely contains, with nothing in the UI to show it happened. A new
+   * transcript therefore clears dismissals and starts the read fresh; promoted
+   * items are real tasks and survive regardless.
    */
+  const sourceChanged = Boolean(transcript);
   const { data: existingActions, error: existingError } = await supabase
     .from("actions")
     .select("id, description, task_id, dismissed")
@@ -295,20 +304,22 @@ export async function POST(request: NextRequest) {
 
   const decided = new Set(
     (existingActions ?? [])
-      .filter((a) => a.task_id !== null || a.dismissed)
+      .filter((a) => a.task_id !== null || (a.dismissed && !sourceChanged))
       .map((a) => key(a.description)),
   );
 
-  const undecidedIds = (existingActions ?? [])
-    .filter((a) => a.task_id === null && !a.dismissed)
+  // Rows to clear: always the undecided ones, plus dismissals when the source
+  // they were judged against no longer exists.
+  const staleIds = (existingActions ?? [])
+    .filter((a) => a.task_id === null && (!a.dismissed || sourceChanged))
     .map((a) => a.id);
 
-  if (undecidedIds.length > 0) {
+  if (staleIds.length > 0) {
     const { error: clearError } = await supabase
       .from("actions")
       .delete()
       .eq("user_id", user.id)
-      .in("id", undecidedIds);
+      .in("id", staleIds);
 
     if (clearError) {
       const message = sanitizeError(clearError);
@@ -317,8 +328,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Could not save the results.", detail: message }, { status: 500 });
     }
   }
-
-  let actions: Action[] = [];
 
   // 2000 is the `actions.description` check constraint.
   const rows: ActionWrite[] = insights.action_items
@@ -332,20 +341,37 @@ export async function POST(request: NextRequest) {
     .filter((row) => !decided.has(key(row.description)));
 
   if (rows.length > 0) {
-    const { data, error } = await supabase
-      .from("actions")
-      .insert(rows)
-      .select();
+    const { error } = await supabase.from("actions").insert(rows);
 
-    if (error || !data) {
+    if (error) {
       const message = sanitizeError(error);
       await markFailed(supabase, meeting.id, user.id, message);
-      console.error("[process-meeting] action insert failed:", error?.message);
+      console.error("[process-meeting] action insert failed:", error.message);
       return NextResponse.json({ error: "Could not save the results.", detail: message }, { status: 500 });
     }
-
-    actions = data;
   }
+
+  /*
+   * Read the meeting's actions back rather than returning just the inserted
+   * ones. The callers count this array for their toast, and re-summarising a
+   * meeting whose items were all already promoted inserts nothing — which
+   * reported a bare "Summarised" for a meeting holding five action items.
+   */
+  const { data: finalActions, error: finalActionsError } = await supabase
+    .from("actions")
+    .select("*")
+    .eq("meeting_id", meeting.id)
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: true });
+
+  if (finalActionsError) {
+    const message = sanitizeError(finalActionsError);
+    await markFailed(supabase, meeting.id, user.id, message);
+    console.error("[process-meeting] could not read back actions:", finalActionsError.message);
+    return NextResponse.json({ error: "Could not save the results.", detail: message }, { status: 500 });
+  }
+
+  const actions: Action[] = finalActions ?? [];
 
   const result: MeetingWrite = {
     summary: insights.summary,

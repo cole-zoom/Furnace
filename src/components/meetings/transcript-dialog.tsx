@@ -72,8 +72,9 @@ export function TranscriptDialog({
          * Only navigate when this actually produced a different meeting. Opened
          * from a meeting's own page ("Replace transcript"), the id comes back
          * unchanged and pushing it would reload the same route minus its query
-         * — dropping the ?from= that tells the back arrow which tab to return
-         * to, and adding a redundant history entry for the page you're on.
+         * — dropping the ?when=/?filter= that tell the back arrow which list
+         * to return to, and adding a redundant history entry for the page
+         * you're already on.
          */
         if (body.meeting?.id && body.meeting.id !== meetingId) {
           router.push(`/meetings/${body.meeting.id}`);
