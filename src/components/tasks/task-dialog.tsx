@@ -98,9 +98,10 @@ export function TaskDialog({ open, onClose, task, defaultStatus }: TaskDialogPro
   // the caret away from wherever the user just clicked.
   const caretPlaced = useRef(false);
 
-  // Whether this visit wrote anything. Opening a task to read it and closing
-  // again should cost nothing — no save, and no board refetch on the way out.
-  const touched = useRef(false);
+  // Set only when a request actually goes out. Opening a task to read it — or
+  // typing a character and deleting it again — should cost nothing, and that
+  // includes the board refetch on the way out.
+  const wrote = useRef(false);
 
   const { state: saveState, schedule, flush, cancel } = useAutosave<Draft>({
     enabled: Boolean(task),
@@ -124,7 +125,13 @@ export function TaskDialog({ open, onClose, task, defaultStatus }: TaskDialogPro
       if (draft.due_date !== previous.due_date) patch.due_date = draft.due_date || null;
 
       if (Object.keys(patch).length === 0) return { ok: true };
-      return updateTask(task.id, patch);
+
+      const result = await updateTask(task.id, patch);
+      // Only a write that *landed* gives the board something new to show. A
+      // failed one leaves the row exactly as the board already has it, so
+      // refetching on the way out would be a round trip to learn nothing.
+      if (result.ok) wrote.current = true;
+      return result;
     },
   });
 
@@ -137,7 +144,6 @@ export function TaskDialog({ open, onClose, task, defaultStatus }: TaskDialogPro
     const next = { ...formRef.current, ...patch };
     formRef.current = next;
     setForm(next);
-    if (task) touched.current = true;
     schedule(next, immediate);
   };
 
@@ -146,12 +152,25 @@ export function TaskDialog({ open, onClose, task, defaultStatus }: TaskDialogPro
    * changes identity, but this one is also read by an effect there, and a
    * close handler that churns every keystroke is a hazard worth not creating.
    *
-   * Flush before the refetch, not after: router.refresh() re-reads the row, so
-   * a write still sitting on the debounce timer would be painted over in the
-   * UI by the older value it hasn't replaced yet.
+   * The ordering is the point. router.refresh() re-reads the row, so it has to
+   * wait for everything outstanding — including a request already in the air —
+   * or the reader watches their own last sentence get reverted on the board.
+   * And it only runs at all if a write actually happened: refetching the whole
+   * board after reading a task and closing it is exactly the wasted round trip
+   * the debounce exists to avoid.
    */
   const close = useCallback(() => {
-    if (task && touched.current) void flush().finally(() => router.refresh());
+    if (!task) {
+      onClose();
+      return;
+    }
+    void flush().then((result) => {
+      // The dialog is on its way out, taking the inline indicator with it — so
+      // anything that didn't persist has to be said somewhere that outlives it.
+      if (result.kind === "blocked") toast.error(`Not saved — ${result.reason.toLowerCase()}`);
+      else if (result.kind === "error") toast.error(result.message);
+      if (wrote.current) router.refresh();
+    });
     onClose();
   }, [task, flush, onClose, router]);
 

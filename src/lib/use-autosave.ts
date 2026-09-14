@@ -51,8 +51,9 @@ export function useAutosave<T>({
 
   const persisted = useRef<T>(initial);
   const pending = useRef<T | null>(null);
-  const inFlight = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The drain currently in progress, so a second caller joins it rather than racing it. */
+  const running = useRef<Promise<SaveState> | null>(null);
 
   /*
    * Read through refs so `run` keeps one identity: it's held by a timer and by
@@ -75,51 +76,70 @@ export function useAutosave<T>({
     }
   }, []);
 
-  const run = useCallback(async (): Promise<void> => {
-    clearTimer();
-    if (!enabled || inFlight.current) return;
+  /**
+   * Writes until there's nothing left to write, and reports how it ended.
+   *
+   * A loop, not a recursive call: anything typed while a request is in the air
+   * is picked up on the next turn. That's what holds the "one request at a
+   * time" guarantee for a fast typist — the alternative is a queue of writes
+   * all landing at once, each one already stale.
+   */
+  const drain = useCallback(async (): Promise<SaveState> => {
+    let last: SaveState = { kind: "idle" };
 
-    inFlight.current = true;
-    try {
-      /*
-       * A loop, not a recursive call: anything typed while a request is in the
-       * air is picked up on the next turn. That's what holds the "one request
-       * at a time" guarantee for a fast typist — the alternative is a queue of
-       * writes all landing at once, each one already stale.
-       */
-      while (pending.current !== null) {
-        const draft = pending.current;
+    while (pending.current !== null) {
+      const draft = pending.current;
 
-        const reason = validateRef.current?.(draft) ?? null;
-        if (reason) {
-          setState({ kind: "blocked", reason });
-          return;
-        }
-
-        setState({ kind: "saving" });
-
-        let result: { ok: true } | { ok: false; error: string };
-        try {
-          result = await saveRef.current(draft, persisted.current);
-        } catch {
-          // A Server Action that never came back — offline, or a redeploy mid-flight.
-          result = { ok: false, error: "Couldn't reach the server." };
-        }
-
-        if (!result.ok) {
-          // `pending` is deliberately left set, so a retry has something to send.
-          setState({ kind: "error", message: result.error });
-          return;
-        }
-
-        persisted.current = draft;
-        if (pending.current === draft) pending.current = null;
-        setState({ kind: "saved" });
+      const reason = validateRef.current?.(draft) ?? null;
+      if (reason) {
+        last = { kind: "blocked", reason };
+        setState(last);
+        return last;
       }
-    } finally {
-      inFlight.current = false;
+
+      setState({ kind: "saving" });
+
+      let result: { ok: true } | { ok: false; error: string };
+      try {
+        result = await saveRef.current(draft, persisted.current);
+      } catch {
+        // A Server Action that never came back — offline, or a redeploy mid-flight.
+        result = { ok: false, error: "Couldn't reach the server." };
+      }
+
+      if (!result.ok) {
+        // `pending` is deliberately left set, so a retry has something to send.
+        last = { kind: "error", message: result.error };
+        setState(last);
+        return last;
+      }
+
+      persisted.current = draft;
+      if (pending.current === draft) pending.current = null;
+      last = { kind: "saved" };
+      setState(last);
     }
-  }, [enabled, clearTimer]);
+
+    return last;
+  }, []);
+
+  /**
+   * Starts a drain, or hands back the one already going.
+   *
+   * Joining matters more than it looks: `flush` awaits this, and a caller that
+   * gave up because a request happened to be in the air would go on to refetch
+   * before that request had committed — showing the reader their own edit
+   * being reverted.
+   */
+  const run = useCallback((): Promise<SaveState> => {
+    clearTimer();
+    if (!enabled) return Promise.resolve<SaveState>({ kind: "idle" });
+
+    running.current ??= drain().finally(() => {
+      running.current = null;
+    });
+    return running.current;
+  }, [enabled, clearTimer, drain]);
 
   const schedule = useCallback(
     (draft: T, immediate = false) => {
@@ -138,9 +158,16 @@ export function useAutosave<T>({
     [enabled, delay, run, clearTimer],
   );
 
-  const flush = useCallback(async () => {
+  /**
+   * Write everything outstanding and report the outcome, so a caller that is
+   * about to close the surface can say what didn't make it. Cheap when clean:
+   * with nothing pending it resolves without a request.
+   */
+  const flush = useCallback((): Promise<SaveState> => {
     clearTimer();
-    await run();
+    // No second pass needed: the drain re-reads `pending` after every write, so
+    // anything scheduled while it was running is already included.
+    return run();
   }, [run, clearTimer]);
 
   /** Drop everything unwritten — for when the record is about to stop existing. */
