@@ -11,6 +11,7 @@ import { TaskBoard } from "@/components/tasks/task-board";
 import { TaskTable } from "@/components/tasks/task-table";
 import { Coal, FuelGauge } from "@/components/coal";
 import { taskViewStore, type TaskViewMode } from "@/lib/view-store";
+import { applyOverlay, taskOverlay } from "@/lib/task-overlay";
 import { useHydrated } from "@/lib/use-hydrated";
 import { useTickingClock } from "@/lib/use-ticking-clock";
 import { cn } from "@/lib/utils";
@@ -19,7 +20,7 @@ import type { Task, TaskPriority, TaskStatus } from "@/lib/database.types";
 type ViewMode = TaskViewMode;
 
 export function TasksView({
-  tasks,
+  tasks: serverTasks,
   now,
 }: {
   tasks: Task[];
@@ -34,6 +35,24 @@ export function TasksView({
     taskViewStore.get,
     taskViewStore.getServer,
   );
+
+  /*
+   * Server rows, with any write that has landed but not yet come back laid over
+   * the top. Everything below this line — the board, the table, the counts and
+   * the task handed to the editor — works from `tasks`, so a save is visible
+   * everywhere the instant it succeeds instead of one refetch later.
+   */
+  const pending = useSyncExternalStore(
+    taskOverlay.subscribe,
+    taskOverlay.get,
+    taskOverlay.getServer,
+  );
+  const tasks = useMemo(() => applyOverlay(serverTasks, pending), [serverTasks, pending]);
+
+  // Once the refetch brings a value back, the overlay for it has done its job.
+  useEffect(() => {
+    taskOverlay.reconcile(serverTasks);
+  }, [serverTasks]);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<TaskStatus | "all">("all");
   const [priorityFilter, setPriorityFilter] = useState<TaskPriority | "all">("all");
