@@ -18,6 +18,7 @@ import {
 import { createTask, deleteTask, updateTask } from "@/lib/actions";
 import { useAutosize } from "@/lib/use-autosize";
 import { useAutosave, type SaveState } from "@/lib/use-autosave";
+import { TASK_PATCH_KEYS, taskOverlay, type TaskPatch } from "@/lib/task-overlay";
 import { cn, dueLabel } from "@/lib/utils";
 import type { Task, TaskPriority, TaskStatus } from "@/lib/database.types";
 
@@ -57,6 +58,21 @@ function seed(task: Task | null | undefined, defaultStatus?: TaskStatus) {
 }
 
 type Draft = ReturnType<typeof seed>;
+
+/**
+ * A draft in the shape the database stores it — and therefore the shape the
+ * board renders. The editor keeps empty fields as "" because that's what an
+ * input holds; the row keeps them as null.
+ */
+function stored(draft: Draft): Required<TaskPatch> {
+  return {
+    title: draft.title.trim(),
+    description: draft.description.trim() || null,
+    status: draft.status,
+    priority: draft.priority,
+    due_date: draft.due_date || null,
+  };
+}
 
 /** Two seconds of not typing. Long enough that a sentence is one write. */
 const AUTOSAVE_DELAY = 2000;
@@ -113,25 +129,59 @@ export function TaskDialog({ open, onClose, task, defaultStatus }: TaskDialogPro
     save: async (draft, previous) => {
       if (!task) return { ok: true };
 
-      // Only the columns that actually moved. An unchanged draft sends nothing
-      // at all, so a stray keystroke that gets undone costs zero requests.
-      const patch: Record<string, unknown> = {};
-      if (draft.title !== previous.title) patch.title = draft.title.trim();
-      if (draft.description !== previous.description) {
-        patch.description = draft.description.trim() || null;
-      }
-      if (draft.status !== previous.status) patch.status = draft.status;
-      if (draft.priority !== previous.priority) patch.priority = draft.priority;
-      if (draft.due_date !== previous.due_date) patch.due_date = draft.due_date || null;
+      /*
+       * Compared in stored form, not draft form. A description of "abc " and
+       * one of "abc" are the same row once trimmed, and diffing the raw drafts
+       * would send a write to change nothing. It also means the patch, the
+       * overlay and the revert below all speak in exactly the shape the board
+       * holds, so none of them can disagree about what a blank field means.
+       */
+      const next = stored(draft);
+      const prev = stored(previous);
 
+      const patch: TaskPatch = {};
+      for (const key of TASK_PATCH_KEYS) {
+        if (next[key] !== prev[key]) (patch as Record<string, unknown>)[key] = next[key];
+      }
       if (Object.keys(patch).length === 0) return { ok: true };
 
-      const result = await updateTask(task.id, patch);
-      // Only a write that *landed* gives the board something new to show. A
-      // failed one leaves the row exactly as the board already has it, so
-      // refetching on the way out would be a round trip to learn nothing.
-      if (result.ok) wrote.current = true;
-      return result;
+      /*
+       * Overlay first, await second — this is the optimistic part.
+       *
+       * The board holds the row, and reopening a task reseeds the editor from
+       * the board's copy. Waiting for the round trip means that closing and
+       * reopening inside it shows the sentence you just typed as missing, and
+       * because the editor seeds once at mount, it stays missing for as long as
+       * that dialog is open.
+       */
+      taskOverlay.record(task.id, patch);
+
+      // Put back what the database still holds, rather than leaving the board
+      // showing an edit that never took.
+      const rollBack = () => {
+        const back: TaskPatch = {};
+        for (const key of Object.keys(patch) as (typeof TASK_PATCH_KEYS)[number][]) {
+          (back as Record<string, unknown>)[key] = prev[key];
+        }
+        taskOverlay.record(task.id, back);
+      };
+
+      try {
+        const result = await updateTask(task.id, patch);
+        // Only a write that *landed* gives the board something new to fetch.
+        if (result.ok) wrote.current = true;
+        else rollBack();
+        return result;
+      } catch (error) {
+        /*
+         * A Server Action that rejects outright — offline, or a redeploy
+         * mid-flight — never returns a result at all, so the branch above
+         * never runs. The hook above turns this into an error state, but only
+         * this scope knows what the optimistic write replaced.
+         */
+        rollBack();
+        throw error;
+      }
     },
   });
 
@@ -213,6 +263,7 @@ export function TaskDialog({ open, onClose, task, defaultStatus }: TaskDialogPro
         return;
       }
       toast.success("Task deleted");
+      taskOverlay.forget(task.id);
       onClose();
       router.refresh();
     });
