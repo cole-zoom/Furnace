@@ -89,8 +89,16 @@ export function MeetingsView({
    */
   const [seenServerClock, setSeenServerClock] = useState(now);
   if (seenServerClock !== now) {
+    /*
+     * Unconditional, deliberately. Taking the newer of the two turns the local
+     * clock into a ratchet: a laptop that reads twenty minutes fast for a few
+     * seconds after resuming from suspend latches that value, and every correct
+     * server clock afterwards loses the comparison and is discarded for the life
+     * of the tab. The server's answer wins whenever it arrives; the tick's
+     * Math.max only guards against a slow machine *between* server renders.
+     */
     setSeenServerClock(now);
-    if (now > clock) setClock(now);
+    setClock(now);
   }
 
   useEffect(() => {
@@ -334,8 +342,18 @@ export function MeetingsView({
                 ? `You have ${upcomingCount} upcoming — they'll show up here once they've happened.`
                 : undefined
             }
+            /*
+             * Whichever axis emptied the list, offer the way out of that one.
+             * Switching to Upcoming with a status filter still on is a real
+             * path here — the segmented control deliberately doesn't reset the
+             * filter — so "Nothing matches that filter" has to be escapable.
+             */
             action={
-              inTab.length === 0 && when === "past" && upcomingCount > 0 ? (
+              inTab.length > 0 ? (
+                <Button size="sm" onClick={() => setFilter("all")}>
+                  Clear filter
+                </Button>
+              ) : when === "past" && upcomingCount > 0 ? (
                 <Button size="sm" onClick={showUpcoming}>
                   See upcoming
                 </Button>

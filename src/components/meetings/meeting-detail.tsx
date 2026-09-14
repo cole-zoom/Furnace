@@ -11,6 +11,7 @@ import {
   Lightbulb,
   MapPin,
   Plus,
+  RefreshCw,
   Sparkles,
   Trash2,
   Users,
@@ -43,11 +44,50 @@ export function MeetingDetail({
   // Bumped on open so the dialog remounts with an empty form each time.
   const [transcriptDialog, setTranscriptDialog] = useState({ open: false, seq: 0 });
   const [showTranscript, setShowTranscript] = useState(false);
+  const [resummarising, setResummarising] = useState(false);
   const [notes, setNotes] = useState(meeting.notes ?? "");
   const [savedNotes, setSavedNotes] = useState(meeting.notes ?? "");
 
   const open = actions.filter((a) => !a.dismissed && !a.task_id);
   const handled = actions.filter((a) => a.dismissed || a.task_id);
+
+  /*
+   * Re-run the transcript already on file.
+   *
+   * The failure copy — here and in the task panel — told people to "open the
+   * meeting to retry", but the only control was gated on `!meeting.transcript`
+   * and process-meeting keeps the transcript when it marks a run failed. So a
+   * failed meeting offered a red error chip and nothing else. A run that dies
+   * mid-request is worse: the row sits at "processing" forever with no way out.
+   */
+  const resummarise = () => {
+    if (!meeting.transcript) return;
+    setResummarising(true);
+    const toastId = toast.loading("Re-reading the transcript…");
+
+    void (async () => {
+      try {
+        const res = await fetch("/api/process-meeting", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ meetingId: meeting.id, transcript: meeting.transcript }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.message ?? body.error ?? "Could not process this transcript.");
+
+        const count = body.actions?.length ?? 0;
+        toast.success(
+          count > 0 ? `Summarised · ${count} action item${count === 1 ? "" : "s"}` : "Summarised",
+          { id: toastId },
+        );
+        router.refresh();
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Something went wrong", { id: toastId });
+      } finally {
+        setResummarising(false);
+      }
+    })();
+  };
 
   const saveNotes = () => {
     if (notes === savedNotes) return;
@@ -109,7 +149,7 @@ export function MeetingDetail({
           {meeting.title}
         </h1>
 
-        {!meeting.transcript && (
+        {!meeting.transcript ? (
           <Button
             size="sm"
             variant="primary"
@@ -117,6 +157,16 @@ export function MeetingDetail({
           >
             <Sparkles className="size-3.5" />
             Add transcript
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            variant={meeting.ai_status === "failed" ? "primary" : "secondary"}
+            onClick={resummarise}
+            loading={resummarising}
+          >
+            {!resummarising && <RefreshCw className="size-3.5" />}
+            {meeting.ai_status === "failed" ? "Retry" : "Re-summarise"}
           </Button>
         )}
         <Button size="sm" variant="danger" onClick={remove} disabled={pending}>

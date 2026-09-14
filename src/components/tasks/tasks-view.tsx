@@ -16,7 +16,14 @@ import type { Task, TaskPriority, TaskStatus } from "@/lib/database.types";
 
 type ViewMode = TaskViewMode;
 
-export function TasksView({ tasks }: { tasks: Task[] }) {
+export function TasksView({
+  tasks,
+  now,
+}: {
+  tasks: Task[];
+  /** Server-resolved, so relative labels don't shift between SSR and hydration. */
+  now: number;
+}) {
   const { newTask, editTask } = useShell();
   const searchParams = useSearchParams();
 
@@ -207,7 +214,7 @@ export function TasksView({ tasks }: { tasks: Task[] }) {
         ) : view === "board" ? (
           <TaskBoard tasks={filtered} />
         ) : (
-          <TaskTable tasks={filtered} />
+          <TaskTable tasks={filtered} now={now} />
         )}
       </div>
     </>

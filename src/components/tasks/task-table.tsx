@@ -44,7 +44,7 @@ const COLUMNS: Array<{ key: SortKey; label: string }> = [
  */
 const GRID = "grid grid-cols-[16px_minmax(0,1fr)_124px_100px_92px_104px] items-center gap-3 px-4";
 
-export function TaskTable({ tasks }: { tasks: Task[] }) {
+export function TaskTable({ tasks, now }: { tasks: Task[]; now: number }) {
   const { editTask } = useShell();
   const router = useRouter();
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({
@@ -173,7 +173,7 @@ export function TaskTable({ tasks }: { tasks: Task[] }) {
               </div>
 
               <div className="min-w-0 truncate text-[12px] text-fg-caption">
-                {relativeTime(task.created_at)}
+                {relativeTime(task.created_at, now)}
               </div>
             </div>
           );

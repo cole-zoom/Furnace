@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getGoogleConnection } from "@/lib/google";
 import { env } from "@/lib/env";
 import { SettingsView, type SettingsData } from "@/components/settings-view";
+import { requestTime } from "@/lib/clock";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -78,5 +79,5 @@ export default async function SettingsPage() {
     },
   };
 
-  return <SettingsView data={data} />;
+  return <SettingsView data={data} now={requestTime()} />;
 }

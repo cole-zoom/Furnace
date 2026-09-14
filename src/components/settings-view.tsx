@@ -25,7 +25,14 @@ export interface SettingsData {
   counts: { tasks: number; meetings: number; people: number };
 }
 
-export function SettingsView({ data }: { data: SettingsData }) {
+export function SettingsView({
+  data,
+  now,
+}: {
+  data: SettingsData;
+  /** Server-resolved, so relative labels don't shift between SSR and hydration. */
+  now: number;
+}) {
   const router = useRouter();
   const [syncing, startSync] = useTransition();
 
@@ -105,7 +112,7 @@ export function SettingsView({ data }: { data: SettingsData }) {
                   </div>
                   <p className="mt-0.5 text-[12px] text-fg-caption">
                     {data.google.lastSyncedAt
-                      ? `Last synced ${relativeTime(data.google.lastSyncedAt)}`
+                      ? `Last synced ${relativeTime(data.google.lastSyncedAt, now)}`
                       : "Never synced"}
                   </p>
                 </div>
