@@ -44,11 +44,25 @@ function fail(error: unknown, fallback: string): { ok: false; error: string } {
 const STATUSES = ["todo", "in_progress", "blocked", "done"] as const;
 const PRIORITIES = ["low", "medium", "high", "urgent"] as const;
 
-const taskInput = z.object({
+/**
+ * The columns a caller may set, with no opinion about what's missing.
+ *
+ * Deliberately free of `.default()`. `.partial()` does not strip a default — it
+ * only makes the key optional, and the default still materialises when the key
+ * is absent. So a schema with `status.default("todo")` parses `{description}`
+ * into `{description, status: "todo", priority: "medium"}`, and an update that
+ * checks `!== undefined` to decide what to write will happily reset two columns
+ * the caller never mentioned. That is precisely how editing the description of
+ * a finished task sent it back to Todo at medium priority.
+ *
+ * Defaults belong to creation, where "not supplied" genuinely means "pick one",
+ * and they live on `createInput` alone.
+ */
+const taskFields = z.object({
   title: z.string().trim().min(1, "Give the task a title").max(500),
   description: z.string().trim().max(20_000).optional().nullable(),
-  status: z.enum(STATUSES).default("todo"),
-  priority: z.enum(PRIORITIES).default("medium"),
+  status: z.enum(STATUSES),
+  priority: z.enum(PRIORITIES),
   due_date: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, "Due date must be YYYY-MM-DD")
@@ -57,12 +71,21 @@ const taskInput = z.object({
   meeting_id: z.uuid().nullable().optional(),
 });
 
+/** A new row: anything omitted gets the board's starting values. */
+const createInput = taskFields.extend({
+  status: z.enum(STATUSES).default("todo"),
+  priority: z.enum(PRIORITIES).default("medium"),
+});
+
+/** An edit: only what the caller actually named is written. */
+const updateInput = taskFields.partial();
+
 // ------------------------------------------------------------------- tasks --
 
 export async function createTask(input: unknown): Promise<ActionResult<{ id: string }>> {
   try {
     const { user, supabase } = await authed();
-    const parsed = taskInput.parse(input);
+    const parsed = createInput.parse(input);
 
     const { data, error } = await supabase
       .from("tasks")
@@ -96,7 +119,7 @@ export async function updateTask(
   try {
     const { user, supabase } = await authed();
     z.uuid().parse(id);
-    const parsed = taskInput.partial().parse(input);
+    const parsed = updateInput.parse(input);
 
     const patch: Partial<Task> = {};
     if (parsed.title !== undefined) patch.title = parsed.title;
