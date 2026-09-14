@@ -34,6 +34,7 @@ import {
 } from "@/lib/actions";
 import { cn, dueLabel, formatDateTime } from "@/lib/utils";
 import { useHydrated } from "@/lib/use-hydrated";
+import { useTickingClock } from "@/lib/use-ticking-clock";
 import type { Action, Meeting } from "@/lib/database.types";
 
 export function MeetingDetail({
@@ -54,9 +55,14 @@ export function MeetingDetail({
   // Bumped on open so the dialog remounts with an empty form each time.
   const [transcriptDialog, setTranscriptDialog] = useState({ open: false, seq: 0 });
   const [showTranscript, setShowTranscript] = useState(false);
-  // Action-item due dates say "Today"/"Tomorrow", which is the reader's
-  // calendar day — unknowable until the browser has it.
+  /*
+   * Action-item due dates say "Today"/"Tomorrow", which is the reader's calendar
+   * day — unknowable until the browser has it, and wrong again by morning if the
+   * instant is pinned to the render. A meeting page is exactly the sort of thing
+   * left open overnight.
+   */
   const hydrated = useHydrated();
+  const clock = useTickingClock(now);
   const [resummarising, setResummarising] = useState(false);
   const [notes, setNotes] = useState(meeting.notes ?? "");
   const [savedNotes, setSavedNotes] = useState(meeting.notes ?? "");
@@ -334,7 +340,7 @@ export function MeetingDetail({
 
               <div className="space-y-1.5">
                 {open.map((action) => {
-                  const due = dueLabel(action.due_date, hydrated ? now : null);
+                  const due = dueLabel(action.due_date, hydrated ? clock : null);
                   return (
                     <div
                       key={action.id}

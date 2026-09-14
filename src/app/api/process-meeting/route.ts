@@ -152,7 +152,10 @@ export async function POST(request: NextRequest) {
      */
     const { data: existing, error: readError } = await supabase
       .from("meetings")
-      .select("*")
+      // Only what the validation below needs. select("*") pulled the whole
+      // transcript back out of Postgres on every call, including the upload
+      // path where the body already carries it.
+      .select("id, transcript")
       .eq("id", meetingId)
       .eq("user_id", user.id)
       .maybeSingle();
@@ -262,40 +265,73 @@ export async function POST(request: NextRequest) {
   }
 
   /*
-   * Re-processing replaces the model's previous read of the meeting, but not
-   * the reader's decisions about it. Promoted items are tasks now; dismissed
-   * items are a judgement that they weren't worth doing — and a dismissal still
-   * has task_id null, so a naive "delete the unpromoted ones" wiped them and
-   * the next run handed every one of them straight back as open. Harmless when
-   * re-processing meant pasting a fresh transcript; not harmless now that
-   * Re-summarise is one click on any meeting.
+   * Reconcile, rather than replace.
+   *
+   * Re-running gives a fresh read of the transcript, but the reader's decisions
+   * about the previous read have to survive it: a promoted item is a task now,
+   * and a dismissed one is a judgement that it wasn't worth doing.
+   *
+   * Preserving those rows isn't enough on its own — the model re-extracts the
+   * same items from the same transcript, so inserting the new list blindly hands
+   * every dismissed item straight back as open and leaves a duplicate behind in
+   * "Handled", one more on every run. Items already decided on are matched by
+   * description and skipped.
    */
-  const { error: clearError } = await supabase
+  const { data: existingActions, error: existingError } = await supabase
     .from("actions")
-    .delete()
+    .select("id, description, task_id, dismissed")
     .eq("meeting_id", meeting.id)
-    .eq("user_id", user.id)
-    .is("task_id", null)
-    .eq("dismissed", false);
+    .eq("user_id", user.id);
 
-  if (clearError) {
-    const message = sanitizeError(clearError);
+  if (existingError) {
+    const message = sanitizeError(existingError);
     await markFailed(supabase, meeting.id, user.id, message);
-    console.error("[process-meeting] could not clear stale actions:", clearError.message);
+    console.error("[process-meeting] could not read existing actions:", existingError.message);
     return NextResponse.json({ error: "Could not save the results.", detail: message }, { status: 500 });
   }
 
+  /** Same wording, modulo case and spacing, is the same action item. */
+  const key = (description: string) => description.trim().toLowerCase().replace(/\s+/g, " ");
+
+  const decided = new Set(
+    (existingActions ?? [])
+      .filter((a) => a.task_id !== null || a.dismissed)
+      .map((a) => key(a.description)),
+  );
+
+  const undecidedIds = (existingActions ?? [])
+    .filter((a) => a.task_id === null && !a.dismissed)
+    .map((a) => a.id);
+
+  if (undecidedIds.length > 0) {
+    const { error: clearError } = await supabase
+      .from("actions")
+      .delete()
+      .eq("user_id", user.id)
+      .in("id", undecidedIds);
+
+    if (clearError) {
+      const message = sanitizeError(clearError);
+      await markFailed(supabase, meeting.id, user.id, message);
+      console.error("[process-meeting] could not clear stale actions:", clearError.message);
+      return NextResponse.json({ error: "Could not save the results.", detail: message }, { status: 500 });
+    }
+  }
+
   let actions: Action[] = [];
-  if (insights.action_items.length > 0) {
-    // 2000 is the `actions.description` check constraint.
-    const rows: ActionWrite[] = insights.action_items.map((item) => ({
+
+  // 2000 is the `actions.description` check constraint.
+  const rows: ActionWrite[] = insights.action_items
+    .map((item) => ({
       user_id: user.id,
       meeting_id: meeting.id,
       description: item.task.slice(0, 2000),
       owner: item.person,
       due_date: item.due_date,
-    }));
+    }))
+    .filter((row) => !decided.has(key(row.description)));
 
+  if (rows.length > 0) {
     const { data, error } = await supabase
       .from("actions")
       .insert(rows)

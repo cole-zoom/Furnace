@@ -172,6 +172,20 @@ export function MeetingsView({
    */
   const showUpcoming = () => applyParams({ when: "upcoming", filter: null });
 
+  /*
+   * Carried into each meeting so its back arrow — and the redirect after a
+   * delete — return to the list as the reader left it. Only the browser's own
+   * back button restores state we don't hand over explicitly, and the in-app
+   * arrow is the one most people reach for.
+   */
+  const detailQuery = (() => {
+    const params = new URLSearchParams();
+    if (when !== "past") params.set("when", when);
+    if (filter !== "all") params.set("filter", filter);
+    const query = params.toString();
+    return query ? `?${query}` : "";
+  })();
+
   // Split the two axes: knowing how many survive the time tab alone is what
   // lets the empty state name the right culprit.
   const inTab = meetings.filter((m) => {
@@ -381,7 +395,7 @@ export function MeetingsView({
                  * tab — which, for a meeting reached from Upcoming, is a list
                  * that deliberately excludes the meeting you just left.
                  */
-                href={`/meetings/${meeting.id}${when === "past" ? "" : `?from=${when}`}`}
+                href={`/meetings/${meeting.id}${detailQuery}`}
                 className="group/row flex items-center gap-3 border-b border-[var(--stroke-weak)] px-4 py-2.5
                            transition-colors duration-[50ms] hover:bg-bg-subtle"
               >

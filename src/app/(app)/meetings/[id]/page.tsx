@@ -8,7 +8,7 @@ import { requestTime } from "@/lib/clock";
 // Next 16: route params arrive as a Promise.
 type Props = {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ from?: string }>;
+  searchParams: Promise<{ when?: string; filter?: string }>;
 };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
@@ -28,16 +28,25 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 export default async function MeetingPage({ params, searchParams }: Props) {
   const { id } = await params;
-  const { from } = await searchParams;
+  const { when, filter } = await searchParams;
 
   /*
-   * Where the back arrow should go. The list keeps its tab in the URL, so a
-   * meeting opened from Upcoming has to return there — plain "/meetings" drops
-   * the reader onto Past, a list that by definition excludes the meeting they
-   * were just looking at.
+   * Where the back arrow should go. The list keeps its tab and status filter in
+   * the URL, so a meeting opened from Upcoming has to return there — plain
+   * "/meetings" drops the reader onto Past, a list that by definition excludes
+   * the meeting they were just looking at, and silently widens whatever they
+   * had narrowed.
+   *
+   * Both values are allowlisted rather than echoed, so nothing arbitrary from
+   * the query string reaches a redirect.
    */
-  const backTo =
-    from === "upcoming" || from === "all" ? `/meetings?when=${from}` : "/meetings";
+  const backParams = new URLSearchParams();
+  if (when === "upcoming" || when === "all") backParams.set("when", when);
+  if (filter === "summarised" || filter === "needs-transcript") {
+    backParams.set("filter", filter);
+  }
+  const backQuery = backParams.toString();
+  const backTo = backQuery ? `/meetings?${backQuery}` : "/meetings";
   const user = await requireUser();
   const supabase = await createClient();
 
