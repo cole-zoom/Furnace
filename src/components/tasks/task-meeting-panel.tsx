@@ -1,11 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { ArrowUpRight, CalendarDays, Check, Lightbulb, Sparkles } from "lucide-react";
+import { useEffect, useId, useState } from "react";
+import { ArrowUpRight, CalendarDays, Check, ChevronRight, Lightbulb } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Skeleton } from "@/components/ui/misc";
-import { Chip } from "@/components/ui/badge";
-import { Label } from "@/components/ui/field";
 import { cn, formatDateTime } from "@/lib/utils";
 import type { Meeting } from "@/lib/database.types";
 
@@ -29,13 +27,18 @@ type State =
   | { kind: "error" };
 
 /**
- * The meeting a task came out of, shown inside the task editor.
+ * The meeting a task came out of, embedded in the task page as a sub-page.
  *
  * Tasks are the view this app is actually lived in, so a task promoted from a
- * transcript shouldn't make you leave to remember why it exists. Fetched on
- * open rather than joined into the board query: most tasks have no meeting, and
- * the board would otherwise carry every transcript's summary just to render a
- * list of titles.
+ * transcript shouldn't make you leave to remember why it exists. But a full
+ * transcript summary is longer than most tasks will ever be, and rendering it
+ * expanded pushed the task's own title and description off the screen — the
+ * context outweighed the thing it was context *for*. So it collapses to a
+ * single row, the way a Notion sub-page does, and opens when asked.
+ *
+ * Fetched on open rather than joined into the board query: most tasks have no
+ * meeting, and the board would otherwise carry every transcript's summary just
+ * to render a list of titles.
  *
  * Read with the browser client, so RLS scopes it — a meeting id that isn't
  * yours returns nothing rather than someone else's notes.
@@ -77,76 +80,82 @@ export function TaskMeetingPanel({ meetingId }: { meetingId: string }) {
 
   if (state.kind === "loading") {
     return (
-      <Framed>
-        <div className="space-y-2 rounded-lg bg-bg-raised p-3 surface">
-          <Skeleton className="h-3.5 w-48" />
-          <Skeleton className="h-3 w-full" />
-          <Skeleton className="h-3 w-4/5" />
+      <Shell>
+        <div className="flex items-center gap-2 px-2.5 py-2">
+          <Skeleton className="size-3.5 rounded" />
+          <Skeleton className="h-3 w-44" />
         </div>
-      </Framed>
+      </Shell>
     );
   }
 
   if (state.kind === "error") {
     return (
-      <Framed>
-        <p className="rounded-lg bg-bg-raised p-3 text-[12px] text-fg-caption surface">
+      <Shell>
+        <p className="px-2.5 py-2 text-[12px] text-fg-caption">
           Couldn&apos;t load the meeting this came from.
         </p>
-      </Framed>
+      </Shell>
     );
   }
 
-  // The meeting was deleted. Nothing to show, and nothing worth a label either.
+  // The meeting was deleted. Nothing to show, and nothing worth a frame either.
   if (state.kind === "gone") return null;
 
+  return <MeetingSubPage meeting={state.meeting} />;
+}
+
+/** The nested-page frame, so every state sits in the same box at the same size. */
+function Shell({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
-    <Framed>
-      <MeetingContextCard meeting={state.meeting} />
-    </Framed>
+    <div className={cn("rounded-lg bg-bg-raised surface", className)}>{children}</div>
   );
 }
 
 /**
- * Owns the "Context" label as well as the card, so a meeting that turns out to
- * be gone doesn't leave a heading floating over empty space.
+ * Presentation only, so it can be rendered without a session behind it.
+ *
+ * Collapsed by default — see the note on TaskMeetingPanel. The disclosure is a
+ * button rather than <details>/<summary> because the "Open" link has to live in
+ * the same row without a click on it also toggling the section.
  */
-function Framed({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        <Label>Context</Label>
-        <Chip tone="ember">
-          <Sparkles className="size-2.5" />
-          From a meeting
-        </Chip>
-      </div>
-      {children}
-    </div>
-  );
-}
-
-/** Presentation only, so it can be rendered without a session behind it. */
-export function MeetingContextCard({ meeting }: { meeting: MeetingContext }) {
-  const hasInsights =
-    Boolean(meeting.summary) || meeting.key_points.length > 0 || meeting.decisions.length > 0;
+export function MeetingSubPage({ meeting }: { meeting: MeetingContext }) {
+  const [open, setOpen] = useState(false);
+  const bodyId = useId();
 
   return (
-    <section className="space-y-2.5 rounded-lg bg-bg-raised p-3 surface">
-      <header className="flex items-start gap-2">
-        <CalendarDays className="mt-0.5 size-3.5 shrink-0 text-fg-caption" />
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-[13px] font-medium text-fg">{meeting.title}</p>
+    <Shell>
+      <div className="flex items-center gap-1 px-1.5 py-1.5">
+        <button
+          type="button"
+          onClick={() => setOpen((prev) => !prev)}
+          aria-expanded={open}
+          aria-controls={bodyId}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left
+                     transition-colors duration-[50ms] hover:bg-bg-subtle
+                     focus-visible:outline-none focus-visible:surface-accent"
+        >
+          <ChevronRight
+            className={cn(
+              "size-3.5 shrink-0 text-fg-caption transition-transform duration-100",
+              open && "rotate-90",
+            )}
+          />
+          <CalendarDays className="size-3.5 shrink-0 text-[var(--ember)]" />
+          <span className="truncate text-[13px] font-medium text-fg">{meeting.title}</span>
           {/*
-            * formatDateTime is unguarded here on purpose: the panel starts in
-            * `loading` and only reaches this card after the effect resolves, so
-            * it never server-renders and there is no hydration pass to disagree
+            * formatDateTime is unguarded here on purpose: the dialog this lives
+            * in renders through a portal that bails on the server, so there is
+            * no hydration pass for a timezone-dependent string to disagree
             * with. Elsewhere the same call has to wait for useHydrated.
             */}
           {meeting.start_time && (
-            <p className="text-[11px] text-fg-caption">{formatDateTime(meeting.start_time)}</p>
+            <span className="hidden shrink-0 text-[11px] text-fg-caption sm:inline">
+              {formatDateTime(meeting.start_time)}
+            </span>
           )}
-        </div>
+        </button>
+
         {/*
           * Opens in a new tab, deliberately.
           *
@@ -164,63 +173,87 @@ export function MeetingContextCard({ meeting }: { meeting: MeetingContext }) {
           href={`/meetings/${meeting.id}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex shrink-0 items-center gap-0.5 text-[12px] text-link
-                     transition-colors duration-[50ms] hover:text-link-strong"
+          className="inline-flex shrink-0 items-center gap-0.5 rounded-md px-1.5 py-1 text-[12px]
+                     text-link transition-colors duration-[50ms]
+                     hover:bg-bg-subtle hover:text-link-strong"
         >
           Open
           <ArrowUpRight className="size-3" />
         </a>
-      </header>
+      </div>
 
-      {!hasInsights ? (
-        <p className="text-[12px] leading-[1.5] text-fg-caption">
-          {/*
-            * Phrased off ai_status, which is the thing actually known here.
-            * "complete" with nothing to show is reachable — a thin or garbled
-            * transcript can summarise to an empty string — and telling that
-            * user to paste a transcript they already pasted is just wrong.
-            */}
-          {meeting.ai_status === "failed"
-            ? "The transcript couldn't be summarised. Open the meeting to retry."
-            : meeting.ai_status === "processing"
-              ? "Summarising the transcript…"
-              : meeting.ai_status === "complete"
-                ? "Summarised, but nothing substantial came back."
-                : "No transcript yet — paste one on the meeting to get a summary."}
-        </p>
-      ) : (
-        <div className="space-y-2.5">
-          {meeting.summary && (
-            <p className="text-[12px] leading-[1.55] text-fg-body">{meeting.summary}</p>
-          )}
-
-          {meeting.key_points.length > 0 && (
-            <Section icon={<Lightbulb className="size-3" />} label="Key points">
-              {meeting.key_points.map((point, i) => (
-                <li key={i} className="flex gap-1.5 text-[12px] leading-[1.5] text-fg-muted">
-                  <span className="mt-[6px] size-1 shrink-0 rounded-full bg-fg-caption" />
-                  {point}
-                </li>
-              ))}
-            </Section>
-          )}
-
-          {meeting.decisions.length > 0 && (
-            <Section icon={<Check className="size-3" />} label="Decisions">
-              {meeting.decisions.map((decision, i) => (
-                <li
-                  key={i}
-                  className="flex gap-1.5 rounded bg-blue-500/[.06] px-2 py-1 text-[12px] leading-[1.5] text-fg-body"
-                >
-                  <Check className="mt-[3px] size-3 shrink-0 text-link" />
-                  {decision}
-                </li>
-              ))}
-            </Section>
-          )}
+      {open && (
+        <div
+          id={bodyId}
+          /*
+           * 56px of left padding is not arbitrary: it's the chevron, the icon
+           * and their two gaps, so the summary starts on the same vertical as
+           * the meeting title above it rather than half-indented under it.
+           */
+          className="border-t border-[var(--stroke-weak)] py-2.5 pl-[56px] pr-3"
+        >
+          <MeetingInsights meeting={meeting} />
         </div>
       )}
-    </section>
+    </Shell>
+  );
+}
+
+function MeetingInsights({ meeting }: { meeting: MeetingContext }) {
+  const hasInsights =
+    Boolean(meeting.summary) || meeting.key_points.length > 0 || meeting.decisions.length > 0;
+
+  if (!hasInsights) {
+    return (
+      <p className="text-[12px] leading-[1.5] text-fg-caption">
+        {/*
+          * Phrased off ai_status, which is the thing actually known here.
+          * "complete" with nothing to show is reachable — a thin or garbled
+          * transcript can summarise to an empty string — and telling that
+          * user to paste a transcript they already pasted is just wrong.
+          */}
+        {meeting.ai_status === "failed"
+          ? "The transcript couldn't be summarised. Open the meeting to retry."
+          : meeting.ai_status === "processing"
+            ? "Summarising the transcript…"
+            : meeting.ai_status === "complete"
+              ? "Summarised, but nothing substantial came back."
+              : "No transcript yet — paste one on the meeting to get a summary."}
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-2.5">
+      {meeting.summary && (
+        <p className="text-[12px] leading-[1.55] text-fg-body">{meeting.summary}</p>
+      )}
+
+      {meeting.key_points.length > 0 && (
+        <Section icon={<Lightbulb className="size-3" />} label="Key points">
+          {meeting.key_points.map((point, i) => (
+            <li key={i} className="flex gap-1.5 text-[12px] leading-[1.5] text-fg-muted">
+              <span className="mt-[6px] size-1 shrink-0 rounded-full bg-fg-caption" />
+              {point}
+            </li>
+          ))}
+        </Section>
+      )}
+
+      {meeting.decisions.length > 0 && (
+        <Section icon={<Check className="size-3" />} label="Decisions">
+          {meeting.decisions.map((decision, i) => (
+            <li
+              key={i}
+              className="flex gap-1.5 rounded bg-blue-500/[.06] px-2 py-1 text-[12px] leading-[1.5] text-fg-body"
+            >
+              <Check className="mt-[3px] size-3 shrink-0 text-link" />
+              {decision}
+            </li>
+          ))}
+        </Section>
+      )}
+    </div>
   );
 }
 
