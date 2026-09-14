@@ -4,6 +4,7 @@ import { useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, Check, LogOut, RefreshCw, X } from "lucide-react";
 import { toast } from "sonner";
+import { readJson } from "@/lib/fetch-json";
 import { PageHeader } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/badge";
@@ -41,10 +42,12 @@ export function SettingsView({
       const pending = toast.loading("Syncing Google Calendar…");
       try {
         const res = await fetch("/api/calendar/sync", { method: "POST" });
-        const body = await res.json();
-        if (!res.ok) throw new Error(body.message ?? body.error ?? "Sync failed");
+        const { ok, data, error } = await readJson<{
+          created: number; updated: number; people: number;
+        }>(res);
+        if (!ok) throw new Error(error ?? "Sync failed");
         toast.success(
-          `${body.created} new · ${body.updated} updated · ${body.people} people`,
+          `${data?.created ?? 0} new · ${data?.updated ?? 0} updated · ${data?.people ?? 0} people`,
           { id: pending },
         );
         router.refresh();

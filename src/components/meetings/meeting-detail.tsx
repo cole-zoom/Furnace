@@ -20,6 +20,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { readJson } from "@/lib/fetch-json";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/badge";
 import { Avatar, SectionHeading } from "@/components/ui/misc";
@@ -92,10 +93,10 @@ export function MeetingDetail({
           // came back as a 400 on a retry that should just work.
           body: JSON.stringify({ meetingId: meeting.id }),
         });
-        const body = await res.json();
-        if (!res.ok) throw new Error(body.message ?? body.error ?? "Could not process this transcript.");
+        const { ok, data, error } = await readJson<{ actions?: unknown[] }>(res);
+        if (!ok) throw new Error(error ?? "Could not process this transcript.");
 
-        const count = body.actions?.length ?? 0;
+        const count = data?.actions?.length ?? 0;
         toast.success(
           count > 0 ? `Summarised · ${count} action item${count === 1 ? "" : "s"}` : "Summarised",
           { id: toastId },

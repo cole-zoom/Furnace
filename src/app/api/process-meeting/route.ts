@@ -261,14 +261,22 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Re-processing replaces the model's previous read of the meeting. Actions the
-  // user already promoted to a task are theirs now, so those stay.
+  /*
+   * Re-processing replaces the model's previous read of the meeting, but not
+   * the reader's decisions about it. Promoted items are tasks now; dismissed
+   * items are a judgement that they weren't worth doing — and a dismissal still
+   * has task_id null, so a naive "delete the unpromoted ones" wiped them and
+   * the next run handed every one of them straight back as open. Harmless when
+   * re-processing meant pasting a fresh transcript; not harmless now that
+   * Re-summarise is one click on any meeting.
+   */
   const { error: clearError } = await supabase
     .from("actions")
     .delete()
     .eq("meeting_id", meeting.id)
     .eq("user_id", user.id)
-    .is("task_id", null);
+    .is("task_id", null)
+    .eq("dismissed", false);
 
   if (clearError) {
     const message = sanitizeError(clearError);

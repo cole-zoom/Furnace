@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useTransition } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import type { Route } from "next";
 import {
   CalendarDays,
   ChevronRight,
@@ -13,12 +12,14 @@ import {
   Users,
 } from "lucide-react";
 import { toast } from "sonner";
+import { readJson } from "@/lib/fetch-json";
 import { PageHeader, useShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Chip, Kbd } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/misc";
 import { cn, formatDateTime, relativeTime } from "@/lib/utils";
 import { useHydrated } from "@/lib/use-hydrated";
+import { useTickingClock } from "@/lib/use-ticking-clock";
 import type { Meeting } from "@/lib/database.types";
 
 const AI_STATUS: Record<
@@ -32,6 +33,7 @@ const AI_STATUS: Record<
 };
 
 type When = "past" | "upcoming" | "all";
+type Filter = "all" | "summarised" | "needs-transcript";
 
 export function MeetingsView({
   meetings,
@@ -68,37 +70,55 @@ export function MeetingsView({
    * actually mounted.
    */
   const pathname = usePathname();
-  const setWhen = (next: When) => {
-    // Now that the tab drives the URL, re-clicking the active one would be a
-    // full server round trip that re-fetches every meeting to render the same
-    // list. Cheap to skip.
-    if (next === when) return;
-
+  /*
+   * Both selections live in the URL so that returning to this list — via the
+   * detail page's back arrow or the browser's — restores what the reader had
+   * narrowed it to. Local state resets on remount, which meant coming back from
+   * a meeting silently widened the list under them.
+   *
+   * Written with history.replaceState rather than router.replace. The page
+   * doesn't read searchParams, so a router navigation re-runs both Supabase
+   * queries to return byte-identical data — and useSearchParams only updates
+   * once that commits, so on a slow connection the tab you clicked stays
+   * unhighlighted and nothing appears to happen. App Router reflects a direct
+   * history write, so the change lands in the same frame and the URL is still
+   * correct for a reload or a back-arrow.
+   */
+  const applyParams = (changes: Record<string, string | null>) => {
     const params = new URLSearchParams(searchParams.toString());
-    if (next === "past") params.delete("when");
-    else params.set("when", next);
+    for (const [key, value] of Object.entries(changes)) {
+      if (value === null) params.delete(key);
+      else params.set(key, value);
+    }
     const query = params.toString();
-    /*
-     * typedRoutes can't verify a path assembled at runtime. The cast is the
-     * documented escape hatch; the value is this component's own pathname with
-     * a query appended, so there's no route here to get wrong.
-     */
-    router.replace((query ? `${pathname}?${query}` : pathname) as Route, {
-      scroll: false,
-    });
+    window.history.replaceState(null, "", query ? `${pathname}?${query}` : pathname);
   };
-  const [filter, setFilter] = useState<"all" | "summarised" | "needs-transcript">("all");
+
+  const setWhen = (next: When) => {
+    if (next === when) return;
+    applyParams({ when: next === "past" ? null : next });
+  };
+
+  const setFilter = (next: Filter) => {
+    if (next === filter) return;
+    applyParams({ filter: next === "all" ? null : next });
+  };
+  const filterParam = searchParams.get("filter");
+  const filter: Filter =
+    filterParam === "summarised" || filterParam === "needs-transcript" ? filterParam : "all";
 
   const sync = () =>
     startSync(async () => {
       const pending = toast.loading("Syncing Google Calendar…");
       try {
         const res = await fetch("/api/calendar/sync", { method: "POST" });
-        const body = await res.json();
-        if (!res.ok) throw new Error(body.message ?? body.error ?? "Sync failed");
+        const { ok, data, error } = await readJson<{
+          created: number; updated: number; people: number;
+        }>(res);
+        if (!ok) throw new Error(error ?? "Sync failed");
 
         toast.success(
-          `${body.created} new · ${body.updated} updated · ${body.people} people`,
+          `${data?.created ?? 0} new · ${data?.updated ?? 0} updated · ${data?.people ?? 0} people`,
           { id: pending },
         );
         router.refresh();
@@ -115,55 +135,7 @@ export function MeetingsView({
    * setState a minute, and only when the tab is actually visible.
    */
   const hydrated = useHydrated();
-  const [clock, setClock] = useState(now);
-
-  /*
-   * Adopt a newer server clock when one arrives. `useState(now)` alone latches
-   * the mount-time value, so after sync()'s router.refresh() the list would go
-   * on classifying against a stale instant until the next tick — and a meeting
-   * that started in between would be filed Upcoming and vanish from the default
-   * tab. Adjust-during-render rather than an effect, so it lands in the same
-   * pass instead of painting the wrong answer first.
-   */
-  const [seenServerClock, setSeenServerClock] = useState(now);
-  if (seenServerClock !== now) {
-    /*
-     * Unconditional, deliberately. Taking the newer of the two turns the local
-     * clock into a ratchet: a laptop that reads twenty minutes fast for a few
-     * seconds after resuming from suspend latches that value, and every correct
-     * server clock afterwards loses the comparison and is discarded for the life
-     * of the tab. The server's answer wins whenever it arrives; the tick's
-     * Math.max only guards against a slow machine *between* server renders.
-     */
-    setSeenServerClock(now);
-    setClock(now);
-  }
-
-  useEffect(() => {
-    // Monotonic: a machine running a few minutes slow would otherwise rewind
-    // past the server clock, and a meeting created seconds ago by "Paste
-    // transcript" would file itself Upcoming and disappear from this tab.
-    const tick = () => setClock((current) => Math.max(current, Date.now()));
-
-    /*
-     * Immediately, not just every minute. Next serves back/forward navigations
-     * from the Router Cache, so remounting this view can hand it a `now` from
-     * twenty minutes ago — and the render-phase guard won't catch it, because
-     * the prop didn't change. Without this, a meeting that started a quarter of
-     * an hour ago stays hidden from the default tab until the first interval.
-     */
-    tick();
-
-    const id = setInterval(tick, 60_000);
-    const onVisible = () => {
-      if (document.visibilityState === "visible") tick();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      clearInterval(id);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, []);
+  const clock = useTickingClock(now);
 
   /*
    * One rule for everything: a meeting is upcoming until it starts.
@@ -198,10 +170,7 @@ export function MeetingsView({
    * twelve meetings arrived lands on "Nothing matches that filter" and a
    * subtitle reading "0 of 12".
    */
-  const showUpcoming = () => {
-    setWhen("upcoming");
-    setFilter("all");
-  };
+  const showUpcoming = () => applyParams({ when: "upcoming", filter: null });
 
   // Split the two axes: knowing how many survive the time tab alone is what
   // lets the empty state name the right culprit.

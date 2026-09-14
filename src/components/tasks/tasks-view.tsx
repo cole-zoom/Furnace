@@ -12,6 +12,7 @@ import { TaskTable } from "@/components/tasks/task-table";
 import { Coal, FuelGauge } from "@/components/coal";
 import { taskViewStore, type TaskViewMode } from "@/lib/view-store";
 import { useHydrated } from "@/lib/use-hydrated";
+import { useTickingClock } from "@/lib/use-ticking-clock";
 import { cn } from "@/lib/utils";
 import type { Task, TaskPriority, TaskStatus } from "@/lib/database.types";
 
@@ -86,14 +87,23 @@ export function TasksView({
    * hydration pass keeps them identical, then the real figure lands.
    */
   const hydrated = useHydrated();
+
+  /*
+   * Ticks, rather than pinning the server render instant. A tab left open
+   * across local midnight would otherwise keep yesterday's boundary and go on
+   * counting yesterday's finished tasks as today's fuel — and the same stale
+   * instant would keep a task that became overdue at midnight labelled "Today".
+   */
+  const clock = useTickingClock(now);
+
   const burnedToday = useMemo(() => {
     if (!hydrated) return 0;
-    const startOfToday = new Date(now);
+    const startOfToday = new Date(clock);
     startOfToday.setHours(0, 0, 0, 0);
     return tasks.filter(
       (t) => t.completed_at && new Date(t.completed_at) >= startOfToday,
     ).length;
-  }, [hydrated, tasks, now]);
+  }, [hydrated, tasks, clock]);
 
   return (
     <>
@@ -224,9 +234,9 @@ export function TasksView({
             }
           />
         ) : view === "board" ? (
-          <TaskBoard tasks={filtered} now={hydrated ? now : null} />
+          <TaskBoard tasks={filtered} now={hydrated ? clock : null} />
         ) : (
-          <TaskTable tasks={filtered} now={now} hydrated={hydrated} />
+          <TaskTable tasks={filtered} now={clock} hydrated={hydrated} />
         )}
       </div>
     </>

@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Sparkles } from "lucide-react";
 import { toast } from "sonner";
+import { readJson } from "@/lib/fetch-json";
 import { Dialog } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Textarea } from "@/components/ui/field";
@@ -51,11 +52,13 @@ export function TranscriptDialog({
           }),
         });
 
-        const body = await res.json();
-        if (!res.ok) {
-          throw new Error(body.message ?? body.error ?? "Could not process that transcript.");
-        }
+        const { ok, data, error } = await readJson<{
+          actions?: unknown[];
+          meeting?: { id?: string };
+        }>(res);
+        if (!ok) throw new Error(error ?? "Could not process that transcript.");
 
+        const body = data ?? {};
         const count = body.actions?.length ?? 0;
         toast.success(
           count > 0
