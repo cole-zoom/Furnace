@@ -98,6 +98,16 @@ export function MeetingsView({
     // past the server clock, and a meeting created seconds ago by "Paste
     // transcript" would file itself Upcoming and disappear from this tab.
     const tick = () => setClock((current) => Math.max(current, Date.now()));
+
+    /*
+     * Immediately, not just every minute. Next serves back/forward navigations
+     * from the Router Cache, so remounting this view can hand it a `now` from
+     * twenty minutes ago — and the render-phase guard won't catch it, because
+     * the prop didn't change. Without this, a meeting that started a quarter of
+     * an hour ago stays hidden from the default tab until the first interval.
+     */
+    tick();
+
     const id = setInterval(tick, 60_000);
     const onVisible = () => {
       if (document.visibilityState === "visible") tick();
@@ -135,6 +145,17 @@ export function MeetingsView({
   // "3 past" when you had twenty.
   const upcomingCount = meetings.filter(isUpcoming).length;
   const pastCount = meetings.length - upcomingCount;
+
+  /*
+   * The count beside it is of ALL upcoming meetings, so the status filter has
+   * to come off on the way through — otherwise the button that exists to prove
+   * twelve meetings arrived lands on "Nothing matches that filter" and a
+   * subtitle reading "0 of 12".
+   */
+  const showUpcoming = () => {
+    setWhen("upcoming");
+    setFilter("all");
+  };
 
   // Split the two axes: knowing how many survive the time tab alone is what
   // lets the empty state name the right culprit.
@@ -202,7 +223,7 @@ export function MeetingsView({
               <>
                 <span aria-hidden>·</span>
                 <button
-                  onClick={() => setWhen("upcoming")}
+                  onClick={showUpcoming}
                   className="rounded text-fg-muted underline decoration-dotted underline-offset-2
                              transition-colors duration-[50ms] hover:text-fg-body"
                 >
@@ -315,7 +336,7 @@ export function MeetingsView({
             }
             action={
               inTab.length === 0 && when === "past" && upcomingCount > 0 ? (
-                <Button size="sm" onClick={() => setWhen("upcoming")}>
+                <Button size="sm" onClick={showUpcoming}>
                   See upcoming
                 </Button>
               ) : undefined
@@ -377,7 +398,7 @@ export function MeetingsView({
                    */
                   title={hydrated ? formatDateTime(meeting.start_time) : undefined}
                 >
-                  {meeting.start_time ? relativeTime(meeting.start_time) : "—"}
+                  {meeting.start_time ? relativeTime(meeting.start_time, clock) : "—"}
                 </span>
 
                 <ChevronRight className="size-3.5 shrink-0 text-fg-disabled transition-transform duration-[50ms] group-hover/row:translate-x-0.5" />

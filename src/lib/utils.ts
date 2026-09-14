@@ -5,11 +5,22 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-/** "3 days ago", "in 2 hours", "just now" — short enough for a dense table. */
-export function relativeTime(input: string | Date | null | undefined): string {
+/**
+ * "3 days ago", "in 2 hours", "just now" — short enough for a dense table.
+ *
+ * `now` is a parameter so a server-rendered caller can pass the same instant it
+ * rendered with. Reading the clock internally makes the output differ between
+ * the server render and hydration whenever the row crosses a bucket boundary in
+ * between — the 45-second "just now" cutoff, or any whole minute — which React
+ * reports as a hydration error.
+ */
+export function relativeTime(
+  input: string | Date | null | undefined,
+  now: number = Date.now(),
+): string {
   if (!input) return "";
   const date = typeof input === "string" ? new Date(input) : input;
-  const diff = date.getTime() - Date.now();
+  const diff = date.getTime() - now;
   const abs = Math.abs(diff);
 
   const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
