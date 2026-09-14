@@ -76,6 +76,21 @@ export function MeetingsView({
    * setState a minute, and only when the tab is actually visible.
    */
   const [clock, setClock] = useState(now);
+
+  /*
+   * Adopt a newer server clock when one arrives. `useState(now)` alone latches
+   * the mount-time value, so after sync()'s router.refresh() the list would go
+   * on classifying against a stale instant until the next tick — and a meeting
+   * that started in between would be filed Upcoming and vanish from the default
+   * tab. Adjust-during-render rather than an effect, so it lands in the same
+   * pass instead of painting the wrong answer first.
+   */
+  const [seenServerClock, setSeenServerClock] = useState(now);
+  if (seenServerClock !== now) {
+    setSeenServerClock(now);
+    if (now > clock) setClock(now);
+  }
+
   useEffect(() => {
     const tick = () => setClock(Date.now());
     const id = setInterval(tick, 60_000);
@@ -89,28 +104,48 @@ export function MeetingsView({
     };
   }, []);
 
+  /*
+   * Google writes an all-day event as bare dates, which Postgres stores as UTC
+   * midnight — start on the first day, end on the day *after* the last.
+   *
+   * Requiring BOTH ends on midnight is what makes this safe. Testing the start
+   * alone catches every ordinary meeting held at the local hour that happens to
+   * map to 00:00 UTC — 5pm PDT, 9am Tokyo — and a 5pm meeting misread as
+   * all-day sits under Upcoming all evening, exactly when you'd be writing it
+   * up. A timed 5pm meeting ends at 01:00 UTC, so the pair test excludes it.
+   */
+  const isAllDay = (m: Meeting) => {
+    if (!m.start_time || !m.end_time) return false;
+    const onUtcMidnight = (iso: string) => {
+      const d = new Date(iso);
+      return (
+        d.getUTCHours() === 0 &&
+        d.getUTCMinutes() === 0 &&
+        d.getUTCSeconds() === 0 &&
+        d.getUTCMilliseconds() === 0
+      );
+    };
+    return (
+      onUtcMidnight(m.start_time) &&
+      onUtcMidnight(m.end_time) &&
+      new Date(m.end_time).getTime() > new Date(m.start_time).getTime()
+    );
+  };
+
   const isUpcoming = (m: Meeting) => {
     if (!m.start_time) return false;
-    const start = new Date(m.start_time);
 
     /*
-     * Google stores an all-day event as a bare date, which Postgres reads as
-     * UTC midnight. Anywhere west of UTC that lands the previous evening, so a
-     * straight comparison files today's all-day event under Past before the day
-     * it belongs to has even started. Compare calendar days for those.
+     * An all-day event is over when its exclusive end passes. Deliberately not
+     * derived from a local calendar day: `getFullYear/Month/Date` resolve in
+     * whatever zone the code runs in — UTC on the server, the user's zone in
+     * the browser — so the same row would classify differently either side of
+     * hydration, jumping tabs and changing the header count as it did so.
+     * Comparing instants is the same answer everywhere.
      */
-    const isAllDay =
-      start.getUTCHours() === 0 &&
-      start.getUTCMinutes() === 0 &&
-      start.getUTCSeconds() === 0;
+    if (isAllDay(m)) return new Date(m.end_time as string).getTime() > clock;
 
-    if (isAllDay) {
-      const today = new Date(clock);
-      const localDay = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-      return start.toISOString().slice(0, 10) > localDay;
-    }
-
-    return start.getTime() > clock;
+    return new Date(m.start_time).getTime() > clock;
   };
 
   // Counted over everything, not over `visible` — these describe the calendar,
@@ -155,14 +190,36 @@ export function MeetingsView({
          * whole calendar. "2 of 50" when 48 of that 50 can't appear under this
          * tab is the same lying count an earlier round set out to fix.
          */
+        /*
+         * The upcoming count is a button, not a label.
+         *
+         * Sync pulls three weeks forward while the default tab shows the past,
+         * so a sync that genuinely imported a dozen meetings leaves this list
+         * visibly unchanged — the toast says "12 new" and nothing appears. The
+         * empty-state hint doesn't help either: it only shows when the tab is
+         * empty, and anyone with past meetings never sees it. Making the count
+         * clickable keeps the way through visible at all times.
+         */
         subtitle={
-          filter !== "all"
-            ? `${visible.length} of ${inTab.length}`
-            : when === "past" && upcomingCount > 0
-              ? `${pastCount} past · ${upcomingCount} upcoming`
-              : when === "upcoming"
-                ? `${upcomingCount} upcoming`
-                : `${meetings.length} total`
+          filter !== "all" ? (
+            `${visible.length} of ${inTab.length}`
+          ) : when === "past" && upcomingCount > 0 ? (
+            <>
+              {pastCount} past
+              <span aria-hidden>·</span>
+              <button
+                onClick={() => setWhen("upcoming")}
+                className="rounded text-fg-muted underline decoration-dotted underline-offset-2
+                           transition-colors duration-[50ms] hover:text-fg-body"
+              >
+                {upcomingCount} upcoming
+              </button>
+            </>
+          ) : when === "upcoming" ? (
+            `${upcomingCount} upcoming`
+          ) : (
+            `${meetings.length} total`
+          )
         }
         actions={
           <>
@@ -319,6 +376,15 @@ export function MeetingsView({
 
                 <span
                   className="w-[120px] shrink-0 text-right text-[12px] text-fg-caption"
+                  /*
+                   * Both the label and the tooltip are formatted with Intl,
+                   * which resolves to the server's zone during SSR and the
+                   * reader's in the browser. React can't reconcile that and
+                   * warns; the browser's answer is the correct one, so let it
+                   * win quietly rather than leaving a hydration error in the
+                   * console for every user outside UTC.
+                   */
+                  suppressHydrationWarning
                   title={formatDateTime(meeting.start_time)}
                 >
                   {meeting.start_time ? relativeTime(meeting.start_time) : "—"}
