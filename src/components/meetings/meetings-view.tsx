@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Chip, Kbd } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/misc";
 import { cn, formatDateTime, relativeTime } from "@/lib/utils";
+import { useHydrated } from "@/lib/use-hydrated";
 import type { Meeting } from "@/lib/database.types";
 
 const AI_STATUS: Record<
@@ -75,6 +76,7 @@ export function MeetingsView({
    * which is the burial this whole feature exists to prevent. Cheap: one
    * setState a minute, and only when the tab is actually visible.
    */
+  const hydrated = useHydrated();
   const [clock, setClock] = useState(now);
 
   /*
@@ -92,7 +94,10 @@ export function MeetingsView({
   }
 
   useEffect(() => {
-    const tick = () => setClock(Date.now());
+    // Monotonic: a machine running a few minutes slow would otherwise rewind
+    // past the server clock, and a meeting created seconds ago by "Paste
+    // transcript" would file itself Upcoming and disappear from this tab.
+    const tick = () => setClock((current) => Math.max(current, Date.now()));
     const id = setInterval(tick, 60_000);
     const onVisible = () => {
       if (document.visibilityState === "visible") tick();
@@ -105,48 +110,25 @@ export function MeetingsView({
   }, []);
 
   /*
-   * Google writes an all-day event as bare dates, which Postgres stores as UTC
-   * midnight — start on the first day, end on the day *after* the last.
+   * One rule for everything: a meeting is upcoming until it starts.
    *
-   * Requiring BOTH ends on midnight is what makes this safe. Testing the start
-   * alone catches every ordinary meeting held at the local hour that happens to
-   * map to 00:00 UTC — 5pm PDT, 9am Tokyo — and a 5pm meeting misread as
-   * all-day sits under Upcoming all evening, exactly when you'd be writing it
-   * up. A timed 5pm meeting ends at 01:00 UTC, so the pair test excludes it.
+   * Earlier versions special-cased all-day events, which Google stores as bare
+   * dates (UTC midnight). Every attempt to detect them from the timestamps
+   * alone misfired on real meetings — a start on UTC midnight is also 5pm PDT
+   * and 9am Tokyo, and requiring both ends on midnight still catches a
+   * midnight-to-midnight block booked from London. Each version buried genuine
+   * meetings, which are the ones that actually carry transcripts, to spare a
+   * birthday reminder from showing up a few hours early.
+   *
+   * The known cost, stated plainly: an all-day event flips to Past at UTC
+   * midnight, which west of UTC is the previous evening. That is cosmetic, it
+   * is the same answer on the server and in the browser, and it cannot hide a
+   * meeting you actually attended. Getting this genuinely right needs the
+   * distinction recorded at sync time — Google hands us `start.date` versus
+   * `start.dateTime` and we currently throw that away — not another guess here.
    */
-  const isAllDay = (m: Meeting) => {
-    if (!m.start_time || !m.end_time) return false;
-    const onUtcMidnight = (iso: string) => {
-      const d = new Date(iso);
-      return (
-        d.getUTCHours() === 0 &&
-        d.getUTCMinutes() === 0 &&
-        d.getUTCSeconds() === 0 &&
-        d.getUTCMilliseconds() === 0
-      );
-    };
-    return (
-      onUtcMidnight(m.start_time) &&
-      onUtcMidnight(m.end_time) &&
-      new Date(m.end_time).getTime() > new Date(m.start_time).getTime()
-    );
-  };
-
-  const isUpcoming = (m: Meeting) => {
-    if (!m.start_time) return false;
-
-    /*
-     * An all-day event is over when its exclusive end passes. Deliberately not
-     * derived from a local calendar day: `getFullYear/Month/Date` resolve in
-     * whatever zone the code runs in — UTC on the server, the user's zone in
-     * the browser — so the same row would classify differently either side of
-     * hydration, jumping tabs and changing the header count as it did so.
-     * Comparing instants is the same answer everywhere.
-     */
-    if (isAllDay(m)) return new Date(m.end_time as string).getTime() > clock;
-
-    return new Date(m.start_time).getTime() > clock;
-  };
+  const isUpcoming = (m: Meeting) =>
+    Boolean(m.start_time) && new Date(m.start_time as string).getTime() > clock;
 
   // Counted over everything, not over `visible` — these describe the calendar,
   // not the current filter, and mixing the two produced a header that claimed
@@ -201,25 +183,34 @@ export function MeetingsView({
          * clickable keeps the way through visible at all times.
          */
         subtitle={
-          filter !== "all" ? (
-            `${visible.length} of ${inTab.length}`
-          ) : when === "past" && upcomingCount > 0 ? (
-            <>
-              {pastCount} past
-              <span aria-hidden>·</span>
-              <button
-                onClick={() => setWhen("upcoming")}
-                className="rounded text-fg-muted underline decoration-dotted underline-offset-2
-                           transition-colors duration-[50ms] hover:text-fg-body"
-              >
-                {upcomingCount} upcoming
-              </button>
-            </>
-          ) : when === "upcoming" ? (
-            `${upcomingCount} upcoming`
-          ) : (
-            `${meetings.length} total`
-          )
+          <>
+            {filter !== "all"
+              ? `${visible.length} of ${inTab.length}`
+              : when === "past"
+                ? `${pastCount} past`
+                : when === "upcoming"
+                  ? `${upcomingCount} upcoming`
+                  : `${meetings.length} total`}
+
+            {/*
+              * Shown whenever there's something through here, including with a
+              * status filter on — gating it on `filter === "all"` meant a user
+              * sitting on Past with "No transcript" active could sync, be told
+              * "12 new", and be offered no way to see any of them.
+              */}
+            {when === "past" && upcomingCount > 0 && (
+              <>
+                <span aria-hidden>·</span>
+                <button
+                  onClick={() => setWhen("upcoming")}
+                  className="rounded text-fg-muted underline decoration-dotted underline-offset-2
+                             transition-colors duration-[50ms] hover:text-fg-body"
+                >
+                  {upcomingCount} upcoming
+                </button>
+              </>
+            )}
+          </>
         }
         actions={
           <>
@@ -377,15 +368,14 @@ export function MeetingsView({
                 <span
                   className="w-[120px] shrink-0 text-right text-[12px] text-fg-caption"
                   /*
-                   * Both the label and the tooltip are formatted with Intl,
-                   * which resolves to the server's zone during SSR and the
-                   * reader's in the browser. React can't reconcile that and
-                   * warns; the browser's answer is the correct one, so let it
-                   * win quietly rather than leaving a hydration error in the
-                   * console for every user outside UTC.
+                   * The tooltip is absolute and Intl-formatted, so it resolves
+                   * in the server's zone during SSR and the reader's afterwards.
+                   * Withholding it until hydration is what actually gets the
+                   * reader their own timezone: suppressHydrationWarning would
+                   * only silence the warning while React left the server's
+                   * string in the DOM permanently.
                    */
-                  suppressHydrationWarning
-                  title={formatDateTime(meeting.start_time)}
+                  title={hydrated ? formatDateTime(meeting.start_time) : undefined}
                 >
                   {meeting.start_time ? relativeTime(meeting.start_time) : "—"}
                 </span>
