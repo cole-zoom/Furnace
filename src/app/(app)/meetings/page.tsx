@@ -1,8 +1,10 @@
+import { Suspense } from "react";
 import type { Metadata } from "next";
 import { requireUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { MeetingsView } from "@/components/meetings/meetings-view";
 import { requestTime } from "@/lib/clock";
+import { ListSkeleton } from "@/components/ui/list-skeleton";
 
 export const metadata: Metadata = { title: "Meetings" };
 
@@ -34,18 +36,20 @@ export default async function MeetingsPage() {
   );
 
   return (
-    <MeetingsView
-      meetings={meetings ?? []}
-      openActionCounts={openActionCounts}
-      /*
-       * The clock comes from the server, not the client. Reading it during
-       * render is impure, and freezing it at mount would leave a meeting that
-       * has since started sitting in "Upcoming" — hidden from the default tab,
-       * which is the exact burial this feature exists to prevent. This page is
-       * dynamic, so every navigation and every router.refresh() re-renders it
-       * with a fresh value.
-       */
-      now={requestTime()}
-    />
+    // MeetingsView reads the `when` tab from useSearchParams, which needs a
+    // boundary above it.
+    <Suspense fallback={<ListSkeleton />}>
+      <MeetingsView
+        meetings={meetings ?? []}
+        openActionCounts={openActionCounts}
+        /*
+         * The clock comes from the server, not the client. Reading it during
+         * render is impure, and a client-only clock drifts from the one the
+         * markup was built with. This page is dynamic, so every navigation and
+         * every router.refresh() supplies a fresh value, which the view adopts.
+         */
+        now={requestTime()}
+      />
+    </Suspense>
   );
 }

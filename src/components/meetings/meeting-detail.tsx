@@ -70,7 +70,10 @@ export function MeetingDetail({
         const res = await fetch("/api/process-meeting", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ meetingId: meeting.id, transcript: meeting.transcript }),
+          // No transcript in the body: the row already holds it. Re-uploading
+          // it also meant a transcript shorter than the route's 20-char floor
+          // came back as a 400 on a retry that should just work.
+          body: JSON.stringify({ meetingId: meeting.id }),
         });
         const body = await res.json();
         if (!res.ok) throw new Error(body.message ?? body.error ?? "Could not process this transcript.");
@@ -83,6 +86,14 @@ export function MeetingDetail({
         router.refresh();
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Something went wrong", { id: toastId });
+        /*
+         * Refresh on failure too. The route marks the row `processing` before
+         * calling Gemini and `failed` afterwards, so without this the page goes
+         * on rendering the previous `complete` state — no error chip, the button
+         * still offering "Re-summarise", and a stale summary presented as
+         * current while the meetings list shows the same row as Failed.
+         */
+        router.refresh();
       } finally {
         setResummarising(false);
       }
@@ -149,6 +160,14 @@ export function MeetingDetail({
           {meeting.title}
         </h1>
 
+        {/*
+          * The re-run stays enabled while `processing` too: a run that dies
+          * mid-request leaves the row there permanently, and disabling this
+          * would make that state unrecoverable. The cost is that two
+          * overlapping runs on one meeting can interleave the route's
+          * delete-then-insert of action items — single-user app, one click,
+          * judged the better trade against a meeting stuck forever.
+          */}
         {!meeting.transcript ? (
           <Button
             size="sm"

@@ -64,7 +64,10 @@ export function TaskMeetingPanel({ meetingId }: { meetingId: string }) {
         return;
       }
 
-      setState(data ? { kind: "ready", meeting: data as MeetingContext } : { kind: "gone" });
+      // No cast: the typed client infers the row from the select literal, so a
+      // column dropped from SELECT becomes a compile error here rather than a
+      // TypeError on `.length` inside the dialog.
+      setState(data ? { kind: "ready", meeting: data } : { kind: "gone" });
     })();
 
     return () => {

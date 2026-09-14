@@ -11,6 +11,7 @@ import { TaskBoard } from "@/components/tasks/task-board";
 import { TaskTable } from "@/components/tasks/task-table";
 import { Coal, FuelGauge } from "@/components/coal";
 import { taskViewStore, type TaskViewMode } from "@/lib/view-store";
+import { useHydrated } from "@/lib/use-hydrated";
 import { cn } from "@/lib/utils";
 import type { Task, TaskPriority, TaskStatus } from "@/lib/database.types";
 
@@ -73,15 +74,26 @@ export function TasksView({
 
   const openCount = tasks.filter((t) => t.status !== "done").length;
 
-  // Fuel burned today. completed_at is maintained by a database trigger, so
-  // this stays honest even when a task is closed from the table checkbox.
+  /*
+   * Fuel burned today. completed_at is maintained by a database trigger, so
+   * this stays honest even when a task is closed from the table checkbox.
+   *
+   * Computed only after hydration: "today" means the *reader's* day, and
+   * setHours resolves in whatever zone the code runs in — UTC on the server.
+   * A task finished at 9pm PDT falls on the next UTC day, so the server would
+   * count it and the browser wouldn't, and the gauge would change value under
+   * the reader as React took over. Rendering 0 on both the server and the
+   * hydration pass keeps them identical, then the real figure lands.
+   */
+  const hydrated = useHydrated();
   const burnedToday = useMemo(() => {
-    const startOfToday = new Date();
+    if (!hydrated) return 0;
+    const startOfToday = new Date(now);
     startOfToday.setHours(0, 0, 0, 0);
     return tasks.filter(
       (t) => t.completed_at && new Date(t.completed_at) >= startOfToday,
     ).length;
-  }, [tasks]);
+  }, [hydrated, tasks, now]);
 
   return (
     <>

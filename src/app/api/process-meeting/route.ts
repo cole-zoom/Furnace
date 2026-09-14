@@ -27,9 +27,14 @@ export const maxDuration = 60;
 
 const bodySchema = z.object({
   meetingId: z.uuid().optional(),
-  // Below ~20 characters there is nothing to extract; above 500k the caller is
-  // pasting a book, and gemini.ts would elide most of it anyway.
-  transcript: z.string().min(20).max(500_000),
+  /*
+   * Optional when `meetingId` is given: a retry shouldn't have to re-upload
+   * half a megabyte the row already holds, and a stored transcript below the
+   * 20-character floor would otherwise make Retry fail validation on data the
+   * user can no longer edit. Below ~20 characters there's nothing to extract;
+   * above 500k the caller is pasting a book, and gemini.ts elides most of it.
+   */
+  transcript: z.string().min(20).max(500_000).optional(),
   // 500 is the `meetings.title` check constraint — reject here rather than
   // letting Postgres raise mid-flow.
   title: z.string().trim().min(1).max(500).optional(),
@@ -108,6 +113,13 @@ export async function POST(request: NextRequest) {
 
   const { meetingId, transcript, title, createIfMissing } = parsed.data;
 
+  if (!meetingId && !transcript) {
+    return NextResponse.json(
+      { error: "Provide a transcript, or a meetingId that already has one." },
+      { status: 400 },
+    );
+  }
+
   if (!meetingId && !createIfMissing) {
     return NextResponse.json(
       { error: "Provide a meetingId, or set createIfMissing to create one." },
@@ -120,7 +132,8 @@ export async function POST(request: NextRequest) {
 
   if (meetingId) {
     const patch: MeetingWrite = {
-      transcript,
+      // Only when one was supplied — a retry must not blank the stored copy.
+      ...(transcript ? { transcript } : {}),
       ai_status: "processing",
       ai_error: null,
       ...(title ? { title } : {}),
@@ -144,6 +157,15 @@ export async function POST(request: NextRequest) {
 
     meeting = data;
   } else {
+    // Guaranteed by the guard above; restated so the type narrows here rather
+    // than leaning on a non-null assertion.
+    if (!transcript) {
+      return NextResponse.json(
+        { error: "Provide a transcript to create a meeting from." },
+        { status: 400 },
+      );
+    }
+
     const draft: MeetingInsert = {
       user_id: user.id,
       title: title ?? deriveTitle(transcript),
@@ -165,10 +187,24 @@ export async function POST(request: NextRequest) {
     meeting = data;
   }
 
+  /*
+   * Either the caller's transcript or the one already on the row. The update
+   * above returns the persisted record, so `meeting.transcript` reflects
+   * whichever it is.
+   */
+  const source = transcript ?? meeting.transcript;
+  if (!source || source.trim().length < 20) {
+    await markFailed(supabase, meeting.id, user.id, "No usable transcript on file.");
+    return NextResponse.json(
+      { error: "That meeting has no transcript to summarise yet.", meetingId: meeting.id },
+      { status: 400 },
+    );
+  }
+
   let insights;
   try {
     insights = await extractMeetingInsights({
-      transcript,
+      transcript: source,
       title: meeting.title,
       meetingDate: meeting.start_time ?? meeting.created_at,
     });

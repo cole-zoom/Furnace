@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useTransition } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import type { Route } from "next";
 import {
   CalendarDays,
   ChevronRight,
@@ -30,6 +31,8 @@ const AI_STATUS: Record<
   failed: { label: "Failed", tone: "danger" },
 };
 
+type When = "past" | "upcoming" | "all";
+
 export function MeetingsView({
   meetings,
   openActionCounts,
@@ -47,8 +50,38 @@ export function MeetingsView({
    * Past by default. Calendar sync pulls three weeks forward, so without this
    * the list opens on meetings that haven't happened and can't have a
    * transcript yet — burying the ones you actually want to write up.
+   *
+   * Held in the URL rather than component state. Opening a meeting and coming
+   * back remounts this view, and local state would snap to Past — leaving the
+   * reader staring at a list that pointedly excludes the meeting they just
+   * came from. That was harmless when the default showed everything; it isn't
+   * now that the default hides a subset.
    */
-  const [when, setWhen] = useState<"past" | "upcoming" | "all">("past");
+  const searchParams = useSearchParams();
+  const whenParam = searchParams.get("when");
+  const when: When = whenParam === "upcoming" || whenParam === "all" ? whenParam : "past";
+
+  /*
+   * Built from the current pathname rather than a hardcoded "/meetings": this
+   * view shouldn't teleport the reader to a different route just because they
+   * changed a tab, and hardcoding meant it navigated away from wherever it was
+   * actually mounted.
+   */
+  const pathname = usePathname();
+  const setWhen = (next: When) => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === "past") params.delete("when");
+    else params.set("when", next);
+    const query = params.toString();
+    /*
+     * typedRoutes can't verify a path assembled at runtime. The cast is the
+     * documented escape hatch; the value is this component's own pathname with
+     * a query appended, so there's no route here to get wrong.
+     */
+    router.replace((query ? `${pathname}?${query}` : pathname) as Route, {
+      scroll: false,
+    });
+  };
   const [filter, setFilter] = useState<"all" | "summarised" | "needs-transcript">("all");
 
   const sync = () =>
