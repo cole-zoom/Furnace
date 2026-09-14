@@ -138,6 +138,11 @@ export function MeetingContextCard({ meeting }: { meeting: MeetingContext }) {
         <div className="min-w-0 flex-1">
           <p className="truncate text-[13px] font-medium text-fg">{meeting.title}</p>
           {meeting.start_time && (
+            {/*
+              * Unguarded on purpose: the panel starts in `loading` and only
+              * reaches this card after the effect resolves, so it never
+              * server-renders and there is no hydration pass to disagree with.
+              */}
             <p className="text-[11px] text-fg-caption">{formatDateTime(meeting.start_time)}</p>
           )}
         </div>

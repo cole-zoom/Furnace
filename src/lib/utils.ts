@@ -62,13 +62,21 @@ export function dueLabel(
   if (!due) return { label: "", tone: "none" };
 
   if (now === null) {
+    /*
+     * tone "none", not "later". The label degrading to an absolute date is
+     * honest — the reader's calendar day genuinely isn't knowable yet — but
+     * "later" is a positive claim of non-urgency, and the board server-renders
+     * through this branch: a task three days overdue would paint as a calm
+     * "Sep 10" instead of a red "3d overdue", and stay that way until hydration.
+     * Neutral is the right answer to a question we can't answer.
+     */
     const [y, m, d] = due.split("-").map(Number);
     return {
       label: new Date(y, (m ?? 1) - 1, d ?? 1).toLocaleDateString("en-US", {
         month: "short",
         day: "numeric",
       }),
-      tone: "later",
+      tone: "none",
     };
   }
 

@@ -65,7 +65,16 @@ export function TranscriptDialog({
         );
 
         onClose();
-        if (body.meeting?.id) router.push(`/meetings/${body.meeting.id}`);
+        /*
+         * Only navigate when this actually produced a different meeting. Opened
+         * from a meeting's own page ("Replace transcript"), the id comes back
+         * unchanged and pushing it would reload the same route minus its query
+         * — dropping the ?from= that tells the back arrow which tab to return
+         * to, and adding a redundant history entry for the page you're on.
+         */
+        if (body.meeting?.id && body.meeting.id !== meetingId) {
+          router.push(`/meetings/${body.meeting.id}`);
+        }
         router.refresh();
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Something went wrong", {

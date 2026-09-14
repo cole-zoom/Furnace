@@ -60,6 +60,11 @@ export function MeetingDetail({
   const [notes, setNotes] = useState(meeting.notes ?? "");
   const [savedNotes, setSavedNotes] = useState(meeting.notes ?? "");
 
+  const hasPriorInsights =
+    Boolean(meeting.summary) ||
+    meeting.key_points.length > 0 ||
+    meeting.decisions.length > 0;
+
   const open = actions.filter((a) => !a.dismissed && !a.task_id);
   const handled = actions.filter((a) => a.dismissed || a.task_id);
 
@@ -212,7 +217,15 @@ export function MeetingDetail({
             {meeting.start_time && (
               <span className="inline-flex items-center gap-1.5">
                 <Clock className="size-3.5 text-fg-caption" />
-                {formatDateTime(meeting.start_time)}
+                {/*
+                  * Same Intl/timezone gap the list has — server zone during
+                  * SSR, the reader's afterwards. Withheld until hydration
+                  * rather than suppressed: React never patches a mismatched
+                  * value, so suppressing would leave the server's timestamp on
+                  * screen permanently. No suppressHydrationWarning needed, as
+                  * both server and hydration render the same empty string.
+                  */}
+                {hydrated ? formatDateTime(meeting.start_time) : ""}
               </span>
             )}
             {meeting.location && (
@@ -249,22 +262,25 @@ export function MeetingDetail({
           )}
 
           {/* -- summary ---------------------------------------------------- */}
+          {/*
+            * Above the whole insights block, not inside the summary.
+            *
+            * A failed run doesn't erase the last good one — the route leaves
+            * summary, key points and decisions untouched, which is the right
+            * call: a timeout shouldn't destroy working notes. But a prior run
+            * can produce key points and decisions with an empty summary, and
+            * nesting this label under `summary &&` hid it in exactly that case,
+            * leaving a red error chip above unlabelled content.
+            */}
+          {meeting.ai_status === "failed" && hasPriorInsights && (
+            <p className="text-[12px] text-fg-caption">
+              Showing the last successful run — the most recent attempt failed.
+            </p>
+          )}
+
           {meeting.summary && (
             <section className="space-y-2">
               <SectionHeading>Summary</SectionHeading>
-              {/*
-                * A failed run doesn't erase the last good one — the route
-                * leaves summary, key points and decisions untouched, which is
-                * the right call: a timeout shouldn't destroy working notes. But
-                * they have to be labelled, or a red error chip at the top and
-                * current-looking prose below it tell the reader two different
-                * stories about the same meeting.
-                */}
-              {meeting.ai_status === "failed" && (
-                <p className="text-[12px] text-fg-caption">
-                  From the last successful run — the most recent attempt failed.
-                </p>
-              )}
               <p className="text-[13px] leading-[1.6] text-fg-body">{meeting.summary}</p>
             </section>
           )}

@@ -47,10 +47,13 @@ const GRID = "grid grid-cols-[16px_minmax(0,1fr)_124px_100px_92px_104px] items-c
 export function TaskTable({
   tasks,
   now,
+  hydrated,
 }: {
   tasks: Task[];
-  /** Null until hydrated, for the reader's calendar day. */
-  now: number | null;
+  /** Server-resolved instant; stable across SSR and hydration. */
+  now: number;
+  /** Whether the reader's calendar day is knowable yet. */
+  hydrated: boolean;
 }) {
   const { editTask } = useShell();
   const router = useRouter();
@@ -124,7 +127,7 @@ export function TaskTable({
 
       <div className="flex-1 overflow-y-auto">
         {sorted.map((task) => {
-          const due = dueLabel(task.due_date, now);
+          const due = dueLabel(task.due_date, hydrated ? now : null);
           const done = task.status === "done";
 
           return (
@@ -180,7 +183,7 @@ export function TaskTable({
               </div>
 
               <div className="min-w-0 truncate text-[12px] text-fg-caption">
-                {relativeTime(task.created_at, now ?? undefined)}
+                {relativeTime(task.created_at, now)}
               </div>
             </div>
           );
