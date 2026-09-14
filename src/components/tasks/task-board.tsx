@@ -142,7 +142,15 @@ function group(tasks: Task[]): Columns {
   return next;
 }
 
-function SortableCard({ task, onEdit }: { task: Task; onEdit: (t: Task) => void }) {
+function SortableCard({
+  task,
+  onEdit,
+  now,
+}: {
+  task: Task;
+  onEdit: (t: Task) => void;
+  now: number | null;
+}) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: task.id });
 
@@ -198,7 +206,7 @@ function SortableCard({ task, onEdit }: { task: Task; onEdit: (t: Task) => void 
         listeners?.onKeyDown?.(event);
       }}
     >
-      <TaskCard task={task} dragging={isDragging} onClick={() => onEdit(task)} />
+      <TaskCard task={task} dragging={isDragging} now={now} onClick={() => onEdit(task)} />
     </div>
   );
 }
@@ -208,11 +216,13 @@ function Column({
   tasks,
   onEdit,
   onAdd,
+  now,
 }: {
   status: TaskStatus;
   tasks: Task[];
   onEdit: (t: Task) => void;
   onAdd: (status: TaskStatus) => void;
+  now: number | null;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: `column:${status}` });
   const meta = STATUS_META[status];
@@ -252,7 +262,7 @@ function Column({
           strategy={verticalListSortingStrategy}
         >
           {tasks.map((task) => (
-            <SortableCard key={task.id} task={task} onEdit={onEdit} />
+            <SortableCard key={task.id} task={task} onEdit={onEdit} now={now} />
           ))}
         </SortableContext>
 
@@ -271,7 +281,7 @@ function Column({
   );
 }
 
-export function TaskBoard({ tasks }: { tasks: Task[] }) {
+export function TaskBoard({ tasks, now }: { tasks: Task[]; now: number | null }) {
   const { editTask, newTask } = useShell();
   const [columns, setColumns] = useState<Columns>(() => group(tasks));
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -526,6 +536,7 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
             tasks={columns[status]}
             onEdit={editTask}
             onAdd={newTask}
+            now={now}
           />
         ))}
         {/* Scroll containers drop their trailing padding; this restores it so
@@ -537,7 +548,7 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
       <DragOverlay dropAnimation={{ duration: 180, easing: "cubic-bezier(.2,0,0,1)" }}>
         {activeTask && (
           <div className="rotate-[1.5deg] cursor-grabbing">
-            <TaskCard task={activeTask} className="surface-e4" />
+            <TaskCard task={activeTask} now={now} className="surface-e4" />
           </div>
         )}
       </DragOverlay>

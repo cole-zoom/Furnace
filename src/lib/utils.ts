@@ -41,12 +41,36 @@ export function relativeTime(
   return "just now";
 }
 
-/** Calendar-aware day labels, so "Today" doesn't drift with the clock. */
-export function dueLabel(due: string | null | undefined): {
+/**
+ * Calendar-aware day labels, so "Today" doesn't drift with the clock.
+ *
+ * `now` is nullable, and passing null is how a server render says "I can't
+ * answer this". "Today" and "Tomorrow" are relative to the *reader's* calendar
+ * day, which resolves in the server's timezone during SSR — a task due Sep 14
+ * renders "Tomorrow" from a UTC server while a reader in Tokyo is already on
+ * Sep 14 and should see "Today". With null it falls back to the absolute date,
+ * which is timezone-independent because it's built from the date parts, and the
+ * caller upgrades to the relative wording once hydrated.
+ */
+export function dueLabel(
+  due: string | null | undefined,
+  now: number | null = Date.now(),
+): {
   label: string;
   tone: "overdue" | "today" | "soon" | "later" | "none";
 } {
   if (!due) return { label: "", tone: "none" };
+
+  if (now === null) {
+    const [y, m, d] = due.split("-").map(Number);
+    return {
+      label: new Date(y, (m ?? 1) - 1, d ?? 1).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+      }),
+      tone: "later",
+    };
+  }
 
   const startOfDay = (d: Date) =>
     new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
@@ -55,7 +79,7 @@ export function dueLabel(due: string | null | undefined): {
   // in western timezones. Split it so the date means what it says locally.
   const [y, m, d] = due.split("-").map(Number);
   const target = startOfDay(new Date(y, (m ?? 1) - 1, d ?? 1));
-  const today = startOfDay(new Date());
+  const today = startOfDay(new Date(now));
   const days = Math.round((target - today) / 86_400_000);
 
   if (days < 0) {

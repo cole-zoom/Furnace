@@ -224,9 +224,9 @@ export function TasksView({
             }
           />
         ) : view === "board" ? (
-          <TaskBoard tasks={filtered} />
+          <TaskBoard tasks={filtered} now={hydrated ? now : null} />
         ) : (
-          <TaskTable tasks={filtered} now={now} />
+          <TaskTable tasks={filtered} now={hydrated ? now : null} />
         )}
       </div>
     </>

@@ -2,12 +2,14 @@
 
 import { useState, useTransition } from "react";
 import Link from "next/link";
+import type { Route } from "next";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
   Check,
   ChevronDown,
   Clock,
+  FileText,
   Lightbulb,
   MapPin,
   Plus,
@@ -30,20 +32,30 @@ import {
   updateMeeting,
 } from "@/lib/actions";
 import { cn, dueLabel, formatDateTime } from "@/lib/utils";
+import { useHydrated } from "@/lib/use-hydrated";
 import type { Action, Meeting } from "@/lib/database.types";
 
 export function MeetingDetail({
   meeting,
   actions,
+  backTo = "/meetings",
+  now,
 }: {
   meeting: Meeting;
   actions: Action[];
+  /** Preserves the list's tab, so back doesn't land on a view that hides this. */
+  backTo?: string;
+  /** Server-resolved instant, used once the reader's calendar day is known. */
+  now: number;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   // Bumped on open so the dialog remounts with an empty form each time.
   const [transcriptDialog, setTranscriptDialog] = useState({ open: false, seq: 0 });
   const [showTranscript, setShowTranscript] = useState(false);
+  // Action-item due dates say "Today"/"Tomorrow", which is the reader's
+  // calendar day — unknowable until the browser has it.
+  const hydrated = useHydrated();
   const [resummarising, setResummarising] = useState(false);
   const [notes, setNotes] = useState(meeting.notes ?? "");
   const [savedNotes, setSavedNotes] = useState(meeting.notes ?? "");
@@ -142,14 +154,14 @@ export function MeetingDetail({
         return;
       }
       toast.success("Meeting deleted");
-      router.push("/meetings");
+      router.push(backTo as Route);
     });
 
   return (
     <>
       <header className="flex h-12 shrink-0 items-center gap-2 border-b border-[var(--stroke)] px-4">
         <Link
-          href="/meetings"
+          href={backTo as Route}
           className="grid size-7 place-items-center rounded-md text-fg-caption
                      transition-colors duration-[50ms] hover:bg-bg-subtle hover:text-fg-body"
           aria-label="Back to meetings"
@@ -240,6 +252,19 @@ export function MeetingDetail({
           {meeting.summary && (
             <section className="space-y-2">
               <SectionHeading>Summary</SectionHeading>
+              {/*
+                * A failed run doesn't erase the last good one — the route
+                * leaves summary, key points and decisions untouched, which is
+                * the right call: a timeout shouldn't destroy working notes. But
+                * they have to be labelled, or a red error chip at the top and
+                * current-looking prose below it tell the reader two different
+                * stories about the same meeting.
+                */}
+              {meeting.ai_status === "failed" && (
+                <p className="text-[12px] text-fg-caption">
+                  From the last successful run — the most recent attempt failed.
+                </p>
+              )}
               <p className="text-[13px] leading-[1.6] text-fg-body">{meeting.summary}</p>
             </section>
           )}
@@ -292,7 +317,7 @@ export function MeetingDetail({
 
               <div className="space-y-1.5">
                 {open.map((action) => {
-                  const due = dueLabel(action.due_date);
+                  const due = dueLabel(action.due_date, hydrated ? now : null);
                   return (
                     <div
                       key={action.id}
@@ -406,11 +431,26 @@ export function MeetingDetail({
               </button>
 
               {showTranscript && (
-                <pre className="max-h-[420px] overflow-y-auto whitespace-pre-wrap rounded-lg bg-bg-raised p-3
-                                font-mono text-[12px] leading-[1.6] text-fg-muted
-                                surface animate-fade-up">
-                  {meeting.transcript}
-                </pre>
+                <div className="space-y-2 animate-fade-up">
+                  {/*
+                    * A transcript too short or garbled to summarise would
+                    * otherwise be permanent: the header's "Add transcript" only
+                    * appears when there isn't one, so there was no way to
+                    * replace a bad one and the meeting stayed stuck.
+                    */}
+                  <Button
+                    size="sm"
+                    onClick={() => setTranscriptDialog((p) => ({ open: true, seq: p.seq + 1 }))}
+                  >
+                    <FileText className="size-3.5" />
+                    Replace transcript
+                  </Button>
+
+                  <pre className="max-h-[420px] overflow-y-auto whitespace-pre-wrap rounded-lg bg-bg-raised p-3
+                                  font-mono text-[12px] leading-[1.6] text-fg-muted surface">
+                    {meeting.transcript}
+                  </pre>
+                </div>
               )}
             </section>
           )}

@@ -17,14 +17,17 @@ export function TaskCard({
   task,
   onClick,
   dragging,
+  now,
   className,
 }: {
   task: Task;
   onClick?: () => void;
   dragging?: boolean;
+  /** Null until hydrated: "Today" depends on the reader's calendar day. */
+  now?: number | null;
   className?: string;
 }) {
-  const due = dueLabel(task.due_date);
+  const due = dueLabel(task.due_date, now ?? null);
 
   return (
     <div

@@ -120,6 +120,16 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // Checked before any write: a transcript that's long enough raw but empty
+  // once trimmed would otherwise insert a meeting and then 400, leaving an
+  // orphan row stuck at "failed".
+  if (transcript && transcript.trim().length < 20) {
+    return NextResponse.json(
+      { error: "That transcript is too short to summarise." },
+      { status: 400 },
+    );
+  }
+
   if (!meetingId && !createIfMissing) {
     return NextResponse.json(
       { error: "Provide a meetingId, or set createIfMissing to create one." },
@@ -131,6 +141,39 @@ export async function POST(request: NextRequest) {
   let meeting: Meeting;
 
   if (meetingId) {
+    /*
+     * Read first, then write. Marking the row "processing" before knowing there
+     * is anything to process meant a retry against an unusable stored
+     * transcript flipped a previously-complete meeting to failed and left it
+     * there, with no UI path to replace the transcript.
+     *
+     * The read is scoped by user_id and returns nothing for a meeting that
+     * isn't yours, so the 404 below still can't confirm someone else's row.
+     */
+    const { data: existing, error: readError } = await supabase
+      .from("meetings")
+      .select("*")
+      .eq("id", meetingId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (readError) {
+      console.error("[process-meeting] meeting read failed:", readError.message);
+      return NextResponse.json({ error: "Could not load the meeting." }, { status: 500 });
+    }
+    if (!existing) return NextResponse.json({ error: "Meeting not found." }, { status: 404 });
+
+    const stored = transcript ?? existing.transcript;
+    if (!stored || stored.trim().length < 20) {
+      return NextResponse.json(
+        {
+          error: "That meeting has no transcript to summarise yet.",
+          meetingId: existing.id,
+        },
+        { status: 400 },
+      );
+    }
+
     const patch: MeetingWrite = {
       // Only when one was supplied — a retry must not blank the stored copy.
       ...(transcript ? { transcript } : {}),
@@ -139,8 +182,6 @@ export async function POST(request: NextRequest) {
       ...(title ? { title } : {}),
     };
 
-    // The update doubles as the existence check: zero rows means the meeting is
-    // missing *or* someone else's, and the caller learns nothing about which.
     const { data, error } = await supabase
       .from("meetings")
       .update(patch)
@@ -187,19 +228,8 @@ export async function POST(request: NextRequest) {
     meeting = data;
   }
 
-  /*
-   * Either the caller's transcript or the one already on the row. The update
-   * above returns the persisted record, so `meeting.transcript` reflects
-   * whichever it is.
-   */
-  const source = transcript ?? meeting.transcript;
-  if (!source || source.trim().length < 20) {
-    await markFailed(supabase, meeting.id, user.id, "No usable transcript on file.");
-    return NextResponse.json(
-      { error: "That meeting has no transcript to summarise yet.", meetingId: meeting.id },
-      { status: 400 },
-    );
-  }
+  // Validated on both paths above; the persisted row carries whichever it is.
+  const source = transcript ?? meeting.transcript ?? "";
 
   let insights;
   try {

@@ -69,6 +69,11 @@ export function MeetingsView({
    */
   const pathname = usePathname();
   const setWhen = (next: When) => {
+    // Now that the tab drives the URL, re-clicking the active one would be a
+    // full server round trip that re-fetches every meeting to render the same
+    // list. Cheap to skip.
+    if (next === when) return;
+
     const params = new URLSearchParams(searchParams.toString());
     if (next === "past") params.delete("when");
     else params.set("when", next);
@@ -401,7 +406,13 @@ export function MeetingsView({
             return (
               <Link
                 key={meeting.id}
-                href={`/meetings/${meeting.id}`}
+                /*
+                 * Carries the active tab so the detail page's back arrow can
+                 * return to it. Without this, "back" lands on the default Past
+                 * tab — which, for a meeting reached from Upcoming, is a list
+                 * that deliberately excludes the meeting you just left.
+                 */
+                href={`/meetings/${meeting.id}${when === "past" ? "" : `?from=${when}`}`}
                 className="group/row flex items-center gap-3 border-b border-[var(--stroke-weak)] px-4 py-2.5
                            transition-colors duration-[50ms] hover:bg-bg-subtle"
               >
